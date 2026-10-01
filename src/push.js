@@ -16,36 +16,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const DINGTALK_URL = 'https://oapi.dingtalk.com/robot/send';
+// 通道元数据与默认配置放在无 Node 依赖的 push-meta.js 里，浏览器版共用同一份。
+// 注意：`export ... from` 只转发、不创建本地绑定，所以这里还要再 import 一次本地名。
+export { DINGTALK_URL, CHANNEL_META, DEFAULT_PUSH } from './push-meta.js';
+import { DINGTALK_URL, CHANNEL_META, DEFAULT_PUSH } from './push-meta.js';
+
 /** 允许用环境变量把推送指向自建/代理地址（也便于测试时指向 Mock 服务） */
 const dingtalkUrl = () => process.env.DINGTALK_URL || DINGTALK_URL;
-
-export const CHANNEL_META = {
-  dingtalk: {
-    label: '钉钉群机器人',
-    fields: [
-      { key: 'accessToken', label: 'Access Token', placeholder: 'Webhook 里 access_token= 后面那串', secret: true },
-      { key: 'secret', label: '加签 Secret（可选）', placeholder: '安全设置选「加签」时填 SEC 开头那串', secret: true },
-      { key: 'keyword', label: '自定义关键词（可选）', placeholder: '安全设置选「自定义关键词」时填，会自动加进标题', secret: false },
-    ],
-  },
-  webhook: {
-    label: '自定义 Webhook',
-    fields: [
-      { key: 'url', label: 'URL', placeholder: 'https://your-server/hook（POST JSON）', secret: true },
-    ],
-  },
-};
-
-export const DEFAULT_PUSH = {
-  enabled: false,
-  channels: [],
-  minScore: 60,             // 低于此评分不推送
-  confirmedOnly: false,     // 只推「已确认」（不含未收盘预警）
-  batchWindowMs: 20_000,    // 聚合窗口：窗口内的信号合并成一条
-  maxPerMinute: 10,         // 每分钟最多发几条（钉钉硬限 20）
-  maxItemsPerMessage: 8,    // 单条消息最多列几个信号
-};
 
 const mask = s => (!s ? '' : (s.length <= 8 ? '****' : s.slice(0, 4) + '****' + s.slice(-4)));
 const sleep = ms => new Promise(r => setTimeout(r, ms));

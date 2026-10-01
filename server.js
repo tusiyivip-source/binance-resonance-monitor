@@ -11,6 +11,7 @@ import { APP, LEVELS, VISIBLE_LEVELS, DEFAULT_SIGNAL } from './src/config.js';im
 import { Market } from './src/market.js';
 import { Engine } from './src/engine.js';
 import { Tracker } from './src/tracker.js';
+import { fileStorage } from './src/file-storage.js';
 import { Pusher, CHANNEL_META, DEFAULT_PUSH } from './src/push.js';
 import { createLogger } from './src/logger.js';
 
@@ -22,7 +23,8 @@ const bucket = new TokenBucket(APP.weightPerMinute, APP.weightBurst);
 const rest = new RestClient(bucket);
 const market = new Market(rest, createLogger('market'));
 const engine = new Engine(market, createLogger('engine'));
-const tracker = new Tracker(path.join(__dirname, 'data', 'signals.jsonl'), createLogger('tracker'));
+const tracker = new Tracker(path.join(__dirname, 'data', 'signals.jsonl'), createLogger('tracker'),
+  fileStorage(path.join(__dirname, 'data', 'signals.jsonl')));
 const pusher = new Pusher(path.join(__dirname, 'data', 'push.json'), createLogger('push'));
 
 // K线一收盘就立刻重估该标的（tick-rest 模式下这是低延迟的关键）

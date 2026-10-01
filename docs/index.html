@@ -4,398 +4,322 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>币安多级别共振盯盘系统</title>
-<meta name="description" content="按 24h 涨幅榜前 200 个币种 × 14 个级别实时盯盘，用固定级别组合 + 回踩突破 MA7/EMA7 + 缠论背驰/成笔链自动报警。零依赖 Node 后端，钉钉推送。">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📈</text></svg>">
-<style>
-:root{
-  --bg:#0a0f16; --bg2:#0d1621; --bg3:#111c29; --line:#1e2a3a;
-  --fg:#e6edf5; --fg2:#a8b6c8; --fg3:#6b7d93;
-  --up:#f6465d; --down:#0ecb81; --gold:#f0b90b; --cyan:#0ef0f0; --accent:#38bdf8;
-  --mono:ui-monospace,SFMono-Regular,"SF Mono",Consolas,"Liberation Mono",monospace;
-}
-*{box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{
-  margin:0;background:var(--bg);color:var(--fg);
-  font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
-  -webkit-font-smoothing:antialiased;
-}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-code{font-family:var(--mono);font-size:.9em;background:#16202e;padding:.12em .42em;border-radius:4px;color:#cfe3ff}
-pre{
-  background:#0b131d;border:1px solid var(--line);border-radius:9px;padding:14px 16px;
-  overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.7;color:#c6d4e5;
-}
-pre code{background:none;padding:0;color:inherit}
-.wrap{max-width:1080px;margin:0 auto;padding:0 22px}
-
-/* ---------- 顶栏 ---------- */
-header{
-  position:sticky;top:0;z-index:9;backdrop-filter:blur(10px);
-  background:rgba(10,15,22,.86);border-bottom:1px solid var(--line);
-}
-.nav{display:flex;align-items:center;gap:20px;height:54px}
-.nav .brand{font-weight:700;letter-spacing:.3px}
-.nav .brand span{color:var(--gold)}
-.nav .links{margin-left:auto;display:flex;gap:18px;font-size:13.5px}
-.nav .links a{color:var(--fg2)}
-.nav .links a:hover{color:var(--fg);text-decoration:none}
-
-/* ---------- Hero ---------- */
-.hero{padding:64px 0 40px;text-align:center}
-.hero h1{
-  margin:0 0 14px;font-size:clamp(26px,4.4vw,42px);line-height:1.25;letter-spacing:-.5px;
-  background:linear-gradient(180deg,#fff,#9fb6d1);-webkit-background-clip:text;background-clip:text;color:transparent;
-}
-.hero p.sub{margin:0 auto 26px;max-width:660px;color:var(--fg2);font-size:16px}
-.badges{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:26px}
-.badge{
-  font-size:12px;padding:4px 11px;border-radius:999px;
-  background:var(--bg3);border:1px solid var(--line);color:var(--fg2);
-}
-.badge.hot{border-color:#5a3a08;background:#241a05;color:#fde68a}
-.badge.ok{border-color:#0c4a6e;background:#08202e;color:#bae6fd}
-.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-.btn{
-  display:inline-block;padding:10px 22px;border-radius:9px;font-size:14.5px;font-weight:600;
-  border:1px solid var(--line);background:var(--bg3);color:var(--fg);transition:.15s;
-}
-.btn:hover{background:#1a2838;text-decoration:none;transform:translateY(-1px)}
-.btn.primary{background:linear-gradient(180deg,#0ea5e9,#0284c7);border-color:#0ea5e9;color:#fff}
-.btn.primary:hover{background:linear-gradient(180deg,#38bdf8,#0ea5e9)}
-
-/* ---------- 通用区块 ---------- */
-section{padding:46px 0;border-top:1px solid var(--line)}
-h2{margin:0 0 8px;font-size:23px;letter-spacing:-.2px}
-h2 .num{color:var(--fg3);font-weight:400;margin-right:10px;font-family:var(--mono);font-size:19px}
-h3{margin:30px 0 10px;font-size:16.5px;color:var(--cyan)}
-.lead{color:var(--fg2);margin:0 0 24px}
-.muted{color:var(--fg3);font-size:13.5px}
-
-/* ---------- 截图 ---------- */
-.shot{margin:0 0 26px;border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--bg2)}
-.shot img{display:block;width:100%;height:auto}
-.shot figcaption{padding:10px 15px;font-size:13px;color:var(--fg2);border-top:1px solid var(--line);background:var(--bg3)}
-.shot figcaption b{color:var(--fg)}
-
-/* ---------- 卡片 ---------- */
-.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
-.card{background:var(--bg2);border:1px solid var(--line);border-radius:11px;padding:17px 18px}
-.card h4{margin:0 0 7px;font-size:15px;display:flex;align-items:center;gap:8px}
-.card p{margin:0;color:var(--fg2);font-size:13.5px}
-.card .k{color:var(--gold);font-weight:700}
-
-/* ---------- 表格 ---------- */
-table{width:100%;border-collapse:collapse;font-size:13.5px;margin:6px 0 4px}
-th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left}
-th{color:var(--fg3);font-weight:600;font-size:12.5px;background:var(--bg2)}
-td.num{font-family:var(--mono)}
-tr:last-child td{border-bottom:none}
-.tblwrap{border:1px solid var(--line);border-radius:10px;overflow:hidden}
-
-/* ---------- 提示块 ---------- */
-.note{
-  border-left:3px solid var(--accent);background:#0c1a26;border-radius:0 9px 9px 0;
-  padding:13px 17px;margin:18px 0;font-size:13.5px;color:var(--fg2);
-}
-.note.warn{border-left-color:var(--gold);background:#1c1706;color:#e8d9a8}
-.note.danger{border-left-color:var(--up);background:#1e0d10;color:#f3c3c9}
-.note b{color:var(--fg)}
-
-/* ---------- 颜色示例 ---------- */
-.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--fg2);margin-top:10px}
-.legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
-
-footer{padding:34px 0 54px;color:var(--fg3);font-size:13px;text-align:center;border-top:1px solid var(--line)}
-@media(max-width:600px){.nav .links{display:none}.hero{padding:44px 0 26px}}
-</style>
+<link rel="stylesheet" href="./style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📡</text></svg>">
 </head>
 <body>
+<div id="web-mode-note" style="display:none;padding:6px 14px;font-size:12px;
+  background:#132a1f;border-bottom:1px solid #1e4a33;color:#8ee0b0;line-height:1.6">
+  🌐 <b>在线版</b>：数据由你的浏览器直接向币安公开接口获取（无需后端）。
+  行情源为「实时价 + REST 补K线」——实测本网络下币安的 K线 WebSocket 被屏蔽，与后端版同一套应对方案。
+  <span style="color:#f0b90b">钉钉推送不可用</span>（需要后端保管密钥）。
+  <a href="./about.html" style="color:#7dd3fc;margin-left:8px">关于本项目 →</a>
+</div>
 
-<header>
-  <div class="wrap nav">
-    <div class="brand">📈 币安<span>多级别共振</span>盯盘</div>
-    <nav class="links">
-      <a href="#shots">界面</a>
-      <a href="#logic">逻辑</a>
-      <a href="#chan">缠论过滤</a>
-      <a href="#quickstart">运行</a>
-      <a href="https://github.com/tusiyivip-source/binance-resonance-monitor">GitHub ↗</a>
-    </nav>
+<header id="topbar">
+  <div class="brand">
+    <span class="logo">📡</span>
+    <div>
+      <h1>币安多级别共振盯盘</h1>
+      <p>涨幅榜 Top200 · 13 个级别 · MA7 / EMA7 回踩突破共振</p>
+    </div>
+  </div>
+  <div class="pills">
+    <span class="pill" id="pill-ws"><i></i>连接中…</span>
+    <span class="pill" id="pill-lat">延迟 —</span>
+    <span class="pill" id="pill-sym">标的 —</span>
+    <span class="pill" id="pill-bull">共振 <b>—</b></span>
+    <span class="pill" id="pill-sig">信号 <b>0</b></span>
+    <span class="pill" id="pill-time">—</span>
+  </div>
+  <div class="actions">
+    <button id="btn-sound" class="btn" title="声音提醒">🔔 声音</button>
+    <button id="btn-notify" class="btn" title="浏览器桌面通知">🖥 通知</button>
+    <button id="btn-perf" class="btn" title="已触发信号的实际表现追踪">📊 绩效</button>
+    <button id="btn-cfg" class="btn">⚙ 参数</button>
   </div>
 </header>
 
-<div class="wrap">
+<section id="toolbar">
+  <input id="q" type="search" placeholder="搜索币种…  ( / 聚焦 )">
+  <label class="fld">最小共振级别
+    <select id="f-bull"><option>0</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option></select>
+  </label>
+  <label class="fld">最小评分
+    <select id="f-score"><option selected>0</option><option>40</option><option>50</option><option>60</option><option>70</option><option>80</option></select>
+  </label>
+  <label class="fld">最大级别不破
+    <select id="f-bigma"><option value="ema7" selected>EMA7</option><option value="ma7">MA7</option></select>
+  </label>
+  <button id="f-groups" class="gchip" title="当前生效的级别组合（点击修改）">组合：—</button>
+  <div class="chips" id="chips"></div>
+  <div class="legend">
+    <span class="lg s1">多头排列</span><span class="lg s2">站上MA7</span><span class="lg s3">纠缠</span>
+    <span class="lg s4">弱势</span><span class="lg s5">空头排列</span><span class="lg s0">不足</span>
+    <span class="lg ev4">★回踩突破</span><span class="lg ev1">▲上穿</span><span class="lg ev2">·回踩</span><span class="lg ev3">▼跌破</span>
+  </div>
+  <div class="right">
+    <label class="toggle"><input type="checkbox" id="t-live" checked> 含未收盘预警</label>
+    <button id="btn-resync" class="btn small">↻ 对账</button>
+  </div>
+</section>
 
-  <div class="hero">
-    <h1>币安多级别共振盯盘系统</h1>
-    <p class="sub">
-      按 24h 涨幅榜 <b>前 200 个标的</b> × <b>14 个级别</b>实时盯盘，用「固定级别组合 +
-      回踩突破 MA7/EMA7 + 缠论背驰/成笔链」自动找出共振标的，并推送到钉钉。
-    </p>
-    <div class="badges">
-      <span class="badge ok">零第三方依赖后端</span>
-      <span class="badge ok">只用币安公开接口</span>
-      <span class="badge">U 本位合约 / 现货可切</span>
-      <span class="badge">173 项自动化验证</span>
-      <span class="badge hot">钉钉推送</span>
+<main>
+  <div class="viewtabs">
+    <button id="tab-matrix" class="vt on">▦ 多级别矩阵</button>
+    <button id="tab-alert" class="vt">🔔 报警级别K线</button>
+    <button id="tab-multi" class="vt">📈 K线图</button>
+    <span class="vtsep"></span>
+    <span id="chart-symbar">
+      <span id="chart-sym" class="chartsym">—</span>
+      <button id="chart-prev" class="vt mini" title="上一个币种">◀</button>
+      <button id="chart-next" class="vt mini" title="下一个币种">▶</button>
+      <button id="chart-detail" class="vt mini" title="查看该币种的级别明细表">📋 明细</button>
+    </span>
+    <span id="alert-symbar" style="display:none">
+      <span class="chartsym">每条报警的<b style="color:#f0b90b">确认级别</b>K线 · 按报警顺序</span>
+      <select id="alert-limit" class="vtsel" title="最多展示多少条报警">
+        <option value="12">最近 12 条</option>
+        <option value="24" selected>最近 24 条</option>
+        <option value="40">最近 40 条</option>
+        <option value="60">最近 60 条</option>
+      </select>
+      <select id="alert-size" class="vtsel" title="每张图的尺寸">
+        <option value="compact">紧凑（塞进一屏）</option>
+        <option value="normal" selected>标准</option>
+        <option value="large">大</option>
+        <option value="xl">特大</option>
+      </select>
+      <button id="alert-refresh" class="vt mini" title="立即刷新">↻</button>
+    </span>
+    <select id="chart-cols" class="vtsel" title="每行显示几张图">
+      <option value="fit" selected>适应窗口</option>
+      <option value="1">1 列（最大）</option>
+      <option value="2">2 列</option>
+      <option value="3">3 列</option>
+      <option value="4">4 列</option>
+      <option value="5">5 列</option>
+      <option value="7">7 列</option>
+    </select>
+    <select id="chart-bars" class="vtsel" title="每个级别显示多少根K线">
+      <option value="auto" selected>自动根数</option>
+      <option value="60">60 根</option>
+      <option value="100">100 根</option>
+      <option value="150">150 根</option>
+      <option value="250">250 根</option>
+      <option value="400">400 根</option>
+    </select>
+    <label class="toggle"><input type="checkbox" id="chart-ma" checked> 均线</label>
+    <label class="toggle"><input type="checkbox" id="chart-chan" checked> 缠论笔</label>
+    <label class="toggle"><input type="checkbox" id="chart-mark" checked> 事件标记</label>
+    <label class="toggle"><input type="checkbox" id="chart-macd" checked> MACD副图</label>
+    <span id="chart-live" class="chartlive">—</span>
+    <span id="alert-live" class="chartlive"></span>
+  </div>
+
+  <div id="mainbody">
+  <div id="view-matrix" class="view">
+    <div id="tablewrap">
+      <table id="grid">
+        <thead>
+          <tr id="head">
+            <th class="c-rank">#</th>
+            <th class="c-sym sortable" data-sort="sym">币种</th>
+            <th class="c-price sortable num" data-sort="price">价格</th>
+            <th class="c-chg sortable num" data-sort="change">24h%</th>
+            <th class="c-vol num" title="24小时成交额（USDT）">成交额</th>
+            <th class="c-bull sortable num" data-sort="bull">共振</th>
+            <th class="c-score sortable num" data-sort="score">评分</th>
+            <th class="c-flag"></th>
+            <!-- 级别列由 JS 注入 -->
+          </tr>
+        </thead>
+        <tbody id="body"></tbody>
+      </table>
+      <div id="empty" class="empty">正在连接币安行情…</div>
     </div>
-    <div class="cta">
-      <a class="btn primary" href="https://github.com/tusiyivip-source/binance-resonance-monitor">查看源码</a>
-      <a class="btn" href="#quickstart">三行命令跑起来</a>
+    <div id="chartgrid"></div>
+    <div id="alertchartwrap">
+      <div id="alertchartgrid"></div>
+      <div id="alert-empty" class="empty" style="display:none">
+        暂无报警。等待多级别共振信号产生后，这里会按报警顺序逐个画出它们的<b>确认级别</b>K线。
+      </div>
     </div>
   </div>
 
-  <div class="note warn">
-    <b>先说实话：</b>回测显示这套策略相对「无脑持有同一批涨幅榜标的」只有<b>微弱超额收益</b>
-    （+4h 约 +0.09% ~ +0.27%），<b>低于交易成本</b>。请把它当作<b>筛选与观察工具</b>，
-    不要当作可盈利策略。页面上所有数字都来自可复现的回测脚本。
+  <aside id="alerts">
+    <div class="ahead">
+      <h2>🔔 共振报警</h2>
+      <span id="alert-count" class="badge">0</span>
+      <button id="btn-clear" class="btn tiny">清空</button>
+    </div>
+    <div id="alertlist" class="alist"></div>
+  </aside>
   </div>
+</main>
 
-  <figure class="shot">
-    <img src="img/shot.png" alt="多级别矩阵：200 标的 × 14 级别" loading="lazy">
-    <figcaption><b>▦ 多级别矩阵</b> —— 200 个标的 × 14 个级别的多空色块矩阵，一眼扫全局，按共振级别数排序</figcaption>
-  </figure>
+<!-- 参数面板 -->
+<div id="cfgpanel" class="drawer hidden">
+  <div class="dhead"><h2>⚙ 信号参数</h2><button class="btn tiny" data-close>✕</button></div>
+  <div class="dbody">
+    <p class="hint">对应需求：<b>≥3 个级别多头排列</b> → 基准级别<b>回踩后上穿 MA7/EMA7</b> → 确认级别<b>同步上穿</b> → 最大级别<b>不跌破均线</b>。</p>
 
+    <div class="groupbox">
+      <div class="gtitle">
+        <b>级别组合（基准 → 确认 → 最大）</b>
+        <span class="gsub">三者不必相邻，例如 3分 → 15分 → 2时</span>
+      </div>
+      <div id="grouplist"></div>
+      <div class="gfoot">
+        <button id="btn-addgroup" class="btn small">＋ 添加组合</button>
+        <button id="btn-preset" class="btn small">恢复示例组合</button>
+        <label class="toggle" style="margin-left:auto"><input type="checkbox" id="c-scanModeAuto"> 穷举扫描模式</label>
+      </div>
+      <div class="gnote">穷举模式 = 自动扫描「基准 + 它的下一档 + 任意更大级别」的全部组合，信号量会大很多。</div>
+    </div>
+
+    <div class="groupbox">
+      <div class="gtitle">
+        <b>缠论背驰过滤</b>
+        <span class="gsub">确认级别「将要出现背驰笔」→ 判定上涨衰竭，拦下该信号</span>
+        <label class="toggle" style="margin-left:auto"><input type="checkbox" id="c-filterBeichi"> 启用</label>
+      </div>
+      <div class="prow">
+        <label>检查范围
+          <select id="c-beichiScope">
+            <option value="mid">仅确认级别</option>
+            <option value="mid+big">确认级别 + 最大级别</option>
+          </select>
+        </label>
+        <label>笔的严格度
+          <select id="c-beichiMinBars">
+            <option value="5">标准笔（≥5根K线）</option>
+            <option value="4">新笔（≥4根）</option>
+            <option value="3">宽松（≥3根）</option>
+          </select>
+        </label>
+      </div>
+      <div class="prow">
+        <label>面积衰减阈值 <input id="c-beichiRatio" type="number" min="0.5" max="1.5" step="0.05"></label>
+        <label>最小幅度比 <input id="c-beichiMinProgress" type="number" min="0" max="2" step="0.05"></label>
+      </div>
+      <div class="gnote" id="beichi-stats">—</div>
+      <div class="gnote">
+        判定口径：<b>包含处理 → 分型 → 标准笔 → MACD 红柱面积对比</b>。
+        当前这一笔还没走完，但价格已越过前一同向笔的极值、而累计 MACD 面积反而更小 → 视为「将要出现背驰笔」。<br>
+        实测（60 标的 / 24 小时）：15分 处于该状态的时间仅占 <b>2.76%</b>，却拦掉了 <b>17.9%</b> 的信号
+        —— 说明信号恰好高度聚集在顶部区域。<br>
+        「面积衰减阈值」越小越严格（1.0 = 只要变小就判定）；「最小幅度比」用于避免把刚起步的短笔误判成背驰。
+      </div>
+    </div>
+
+    <div class="groupbox">
+      <div class="gtitle">
+        <b>回踩成笔链（笔延续级别）</b>
+        <span class="gsub">回调必须深到让中间的每个级别都成笔</span>
+        <label class="toggle" style="margin-left:auto"><input type="checkbox" id="c-requireStrokeChain"> 启用</label>
+      </div>
+      <div class="prow">
+        <label class="toggle"><input type="checkbox" id="c-chainRequireAboveMa"> 链上各级别同时站上 MA7</label>
+      </div>
+      <div class="gnote" id="chain-stats">—</div>
+      <div class="gnote">
+        只让最小级别成笔的回调是<b>浅回调</b>，撑不起大级别的延续。要算作 <b>30分 笔延续</b>，
+        必须让 <b>5分、10分、15分全部成笔</b>（即从基准级别到确认级别之间、不含确认级别的所有级别）：
+        <br>· <code>5m&gt;30m&gt;3h</code> → 要求 5m / 10m / 15m 成笔
+        <br>· <code>3m&gt;15m&gt;2h</code> → 要求 3m / 5m / 10m 成笔
+        <br>· <code>2m&gt;10m&gt;1h</code> → 要求 2m / 3m / 5m 成笔
+        <br>判定方式：某级别的「最近一个完成的向下笔」的底，必须落在<b>基准级别回调起点之后</b>。
+        <br>实测（140 条信号）：只要求成笔保留 <b>25.0%</b>；再加上「都站上 MA7」保留 <b>17.9%</b>。
+        卡住的总是<b>紧挨确认级别的那一级</b>（30分组卡 10分、10分组卡 5分）——它的笔最长、最难成。
+      </div>
+    </div>
+
+    <div class="groupbox">
+      <div class="gtitle">
+        <b>📱 钉钉推送</b>
+        <span class="gsub">群机器人 Webhook，支持加签与自定义关键词</span>
+        <label class="toggle" style="margin-left:auto"><input type="checkbox" id="p-enabled"> 启用推送</label>
+      </div>
+      <div id="pushlist"></div>
+      <div class="gfoot">
+        <button id="btn-addpush" class="btn small">＋ 添加通道</button>
+        <button id="btn-pushtest" class="btn small">发送测试消息</button>
+        <span id="push-msg" class="msg"></span>
+      </div>
+      <div class="prow">
+        <label>最低推送评分 <input id="p-minScore" type="number" min="0" max="100" step="1"></label>
+        <label>聚合窗口(秒) <input id="p-batch" type="number" min="0" max="600" step="5"></label>
+        <label>每分钟上限 <input id="p-maxpm" type="number" min="1" max="20" step="1"></label>
+        <label>单条最多 <input id="p-maxitems" type="number" min="1" max="20" step="1"> 条</label>
+        <label class="toggle"><input type="checkbox" id="p-confirmedOnly"> 只推「已确认」</label>
+      </div>
+      <div class="gnote" id="push-stats">—</div>
+      <div class="gnote">信号会先在聚合窗口内合并成一条再发 —— 钉钉机器人硬限 <b>20 条/分钟</b>（超限报 660026），
+        逐条推送必然刷屏并撞限流。想临时静音，取消勾选顶部的「启用推送」即可。</div>
+    </div>
+    <label class="row"><span>多头排列最少级别数</span><input id="c-minBullLevels" type="number" min="2" max="14" step="1"></label>
+    <label class="row"><span>回踩回看K线数</span><input id="c-pullbackLookback" type="number" min="1" max="20" step="1"></label>
+    <label class="row"><span>回踩容差 (%)</span><input id="c-pullbackTolerance" type="number" min="0" max="2" step="0.05"></label>
+    <label class="row"><span>基准上穿回看K线数</span><input id="c-triggerLookback" type="number" min="1" max="10" step="1"></label>
+    <label class="row"><span>确认级别上穿回看K线数</span><input id="c-adjacentLookback" type="number" min="1" max="15" step="1"></label>
+    <label class="row"><span>最大级别判定均线<br><small style="color:#5b6f8c;font-size:10.5px">实测此开关几乎不影响结果：命中的信号里最大级别价格同时站上两条线</small></span><select id="c-bigMa"><option value="ema7">EMA7（默认）</option><option value="ma7">MA7</option></select></label>
+    <label class="row"><span>基准级别下限下标（auto 模式）</span><input id="c-baseMinIdx" type="number" min="0" max="14" step="1"></label>
+    <label class="row"><span>基准级别上限下标（auto 模式）</span><input id="c-baseMaxIdx" type="number" min="0" max="14" step="1"></label>
+    <label class="row"><span>最大级别不破容差 (%)</span><input id="c-bigTolerance" type="number" min="-1" max="5" step="0.1"></label>
+    <label class="row"><span>基准须站上 EMA7</span><input id="c-requireEma7" type="checkbox"></label>
+    <label class="row"><span>相邻级别须上穿</span><input id="c-requireAdjacentCross" type="checkbox"></label>
+    <label class="row"><span>基准须为多头形态</span><input id="c-requireBaseBull" type="checkbox"></label>
+    <label class="row"><span>推送预警（未收盘）</span><input id="c-useLiveCandle" type="checkbox"></label>
+    <label class="row"><span>共振计数方式</span><select id="c-countRule"><option value="align">严格多头排列 c&gt;MA7&gt;MA25</option><option value="above">宽松：站上 MA7</option></select></label>
+    <label class="row"><span>最低推送评分</span><input id="c-minScore" type="number" min="0" max="100" step="1"></label>
+    <div class="dfoot">
+      <button id="btn-cfgsave" class="btn primary">保存并应用</button>
+      <button id="btn-cfgreset" class="btn">恢复默认</button>
+      <span id="cfg-msg" class="msg"></span>
+    </div>
+  </div>
 </div>
 
-<section id="shots">
-  <div class="wrap">
-    <h2><span class="num">01</span>三个视图</h2>
-    <p class="lead">同一套数据，三种看盘方式。</p>
-
-    <figure class="shot">
-      <img src="img/shot-chart.png" alt="多级别K线图：14 个级别按周期升序铺开" loading="lazy">
-      <figcaption>
-        <b>📈 K线图</b> —— 当前币种的 <b>14 个级别按周期升序依次铺开</b>（2分 → 周线），
-        含 MA7 / EMA7 / MA25、MACD 副图、缠论笔折线、顶底分型标记。
-        「适应窗口」自动试算列数，<b>一屏铺满不出滚动条</b>；点任意一张图可放大。
-      </figcaption>
-    </figure>
-
-    <figure class="shot">
-      <img src="img/shot-alertchart.png" alt="报警级别K线：每条报警取自己组合的确认级别" loading="lazy">
-      <figcaption>
-        <b>🔔 报警级别K线</b> —— 把右侧每条报警逐个画成 K 线，
-        <b>每条取它自己组合里的「确认级别」</b>（<code>3m&gt;15m&gt;2h</code> 画 15分，
-        <code>5m&gt;30m&gt;3h</code> 画 30分），<b>严格按提醒顺序排列</b>。
-        这正是触发那条报警的级别，一眼就能看出当时到底长什么样。
-      </figcaption>
-    </figure>
-
-    <div class="legend">
-      <span><i style="background:#f6465d"></i>涨</span>
-      <span><i style="background:#0ecb81"></i>跌</span>
-      <span><i style="background:#f0b90b"></i>MA7</span>
-      <span><i style="background:#0ef0f0"></i>EMA7</span>
-      <span><i style="background:#a78bfa"></i>MA25</span>
-      <span class="muted">（币安配色：涨红跌绿）</span>
-    </div>
-
-    <figure class="shot" style="margin-top:26px">
-      <img src="img/shot-detail.png" alt="单币种 14 级别数值明细" loading="lazy">
-      <figcaption>
-        <b>📋 级别明细</b> —— 单币种 14 个级别的均线数值、多空状态、事件标记、距 MA7 百分比，
-        用来核对图表上看到的东西
-      </figcaption>
-    </figure>
-  </div>
-</section>
-
-<section id="logic">
-  <div class="wrap">
-    <h2><span class="num">02</span>报警逻辑</h2>
-    <p class="lead">级别分组是<b>固定三元组</b>，不是相邻级别。</p>
-
-    <div class="tblwrap">
-      <table>
-        <thead><tr><th>组合</th><th>基准级别</th><th>确认级别</th><th>最大级别</th></tr></thead>
-        <tbody>
-          <tr><td><code>3m &gt; 15m &gt; 2h</code></td><td>3分</td><td>15分</td><td>2时</td></tr>
-          <tr><td><code>2m &gt; 10m &gt; 1h</code></td><td>2分</td><td>10分</td><td>1时</td></tr>
-          <tr><td><code>5m &gt; 30m &gt; 3h</code></td><td>5分</td><td>30分</td><td>3时</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h3>触发条件</h3>
-    <div class="grid">
-      <div class="card">
-        <h4>① 基准级别回踩后突破</h4>
-        <p>先回踩触及 MA7（<span class="k">回踩</span>），随后收盘价<b>上穿 MA7 与 EMA7</b>，并站在均线上方。</p>
-      </div>
-      <div class="card">
-        <h4>② 确认级别同步上穿</h4>
-        <p>确认级别在最近几根K线内也上穿 MA7 —— 也就是「<b>临近级别也上穿均线</b>」。</p>
-      </div>
-      <div class="card">
-        <h4>③ 最大级别不能跌破</h4>
-        <p>最大级别收盘价需站在 EMA7/MA7 与 MA25 之上，且不处于空头排列。</p>
-      </div>
-      <div class="card">
-        <h4>④ 共振级别数 ≥ 3</h4>
-        <p>14 个级别里至少 3 个处于严格多头排列（<code>收 &gt; MA7 &gt; MA25</code> 且 MA7 上行）。</p>
-      </div>
-    </div>
-
-    <div class="note">
-      <b>合成级别：</b>币安<b>没有</b> 2分 / 10分 / 3时 这三个周期（请求会返回 400）。
-      本项目用 1分→2分、5分→10分、1时→3时 在本地按「时间戳对齐 + 完整桶」合成，
-      并有单元测试逐字段对照币安原生K线（332 根全部一致）。
-    </div>
-  </div>
-</section>
-
-<section id="chan">
-  <div class="wrap">
-    <h2><span class="num">03</span>两道缠论过滤</h2>
-    <p class="lead">均线只能看出「位置」，看不出「动能是不是要衰竭了」。这两道过滤用缠论补上。</p>
-
-    <h3>① 背驰过滤 —— 确认级别「将要出现背驰笔」</h3>
-    <p class="muted">
-      包含处理 → 分型 → 标准笔（顶底之间至少 5 根K线）→ MACD 红柱面积对比。
-      当前这一笔还没走完，但价格已越过前一同向笔的极值、而累计 MACD 面积反而更小 → 判定动能衰竭，<b>拦下该信号</b>。
-    </p>
-    <div class="note">
-      实测（60 标的 / 24 小时）：15分 处于该状态的时间只占 <b>2.76%</b>，却拦掉了 <b>17.9%</b> 的信号 ——
-      信号恰好高度聚集在顶部区域（约 6.5 倍富集）。
-    </div>
-
-    <h3>② 回踩成笔链 —— 确定「笔延续级别」</h3>
-    <p class="muted">
-      只让最小级别成笔的回调是<b>浅回调</b>，撑不起大级别的延续。
-      要算作 <b>30分 笔延续</b>，必须让 <b>5分、10分、15分全部成笔</b>
-      —— 即从基准级别到确认级别之间（不含确认级别）的所有级别。
-    </p>
-    <div class="tblwrap">
-      <table>
-        <thead><tr><th>级别组合</th><th>必须全部成笔</th><th>回测保留率</th></tr></thead>
-        <tbody>
-          <tr><td><code>5m&gt;30m&gt;3h</code></td><td><b>5m / 10m / 15m</b></td><td class="num">50 → 8</td></tr>
-          <tr><td><code>2m&gt;10m&gt;1h</code></td><td><b>2m / 3m / 5m</b></td><td class="num">43 → 17</td></tr>
-          <tr><td><code>3m&gt;15m&gt;2h</code></td><td><b>3m / 5m / 10m</b></td><td class="num">47 → 10</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="muted">
-      判定：某级别的「最近一个完成的<b>向下笔</b>」的底，必须落在<b>基准级别回调起点之后</b>。<br>
-      140 条基线信号里，只要求成笔保留 <b>25.0%</b>；再加上「链上各级别都站上 MA7」保留 <b>17.9%</b>。
-      <b>卡住的总是紧挨确认级别的那一级</b>（30分组卡 10分、10分组卡 5分）—— 它的笔最长、最难成。
-    </p>
-    <div class="note warn">
-      这个条件<b>非常严格</b>，意味着原来 4 条信号里现在只留 1 条。这正是「跌无可跌」的含义，
-      但如果你偏好更多信号，面板上可以把这两道过滤逐个关掉。
-    </div>
-
-    <h3>报警文案</h3>
-    <pre><code>5分回踩后上穿MA7/EMA7，30分同步上穿均线，3时站稳EMA7不破
-· 回踩已带动 5分/10分/15分 全部成笔（笔延续至 15分）
-· 4个级别多头排列 · [预警(未收盘)]</code></pre>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2><span class="num">04</span>数据通道与限频</h2>
-    <p class="lead">低延迟的关键在于怎么拿行情，以及别把权重打爆。</p>
-    <div class="grid">
-      <div class="card">
-        <h4>⚡ 实时价驱动</h4>
-        <p>合约走 <code>!bookTicker</code> 全市场最优买卖价驱动K线形成，K线在边界处 <b>1~2 秒</b>内判定收盘。该流不消耗权重。</p>
-      </div>
-      <div class="card">
-        <h4>🔁 REST 滚动修正</h4>
-        <p>滚动拉取官方K线修正真实 OHLCV。<b>首轮回填 300 根</b>，之后用 99 根（权重 1）<b>合并式</b>写入，序列随运行时间累积而<b>不多花权重</b>。</p>
-      </div>
-      <div class="card">
-        <h4>🚦 令牌桶 + 权重校准</h4>
-        <p>用响应头 <code>x-mbx-used-weight-1m</code> 实时校准，按官方队列平滑请求，429/418 自动退避。</p>
-      </div>
-      <div class="card">
-        <h4>📉 稳态只用了 17%</h4>
-        <p>合约权重预算 2400/分钟，实测稳态约 <b>400/2400</b>，留足余量应对突发。</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="quickstart">
-  <div class="wrap">
-    <h2><span class="num">05</span>运行</h2>
-    <p class="lead">需要 Node.js 18+（用到了内置 <code>fetch</code> 与 <code>WebSocket</code>）。<b>无需 npm install</b>。</p>
-    <pre><code>git clone https://github.com/tusiyivip-source/binance-resonance-monitor.git
-cd binance-resonance-monitor
-node server.js                      :: 默认 = U本位合约
-set MARKET=spot &amp;&amp; node server.js    :: 切回现货</code></pre>
-    <p class="muted">浏览器打开 <code>http://127.0.0.1:8848</code>。首次启动约 1~2 分钟在权重预算内渐进播种 200 标的 × 12 个原生周期的历史K线，播种期间面板已可用。</p>
-
-    <div class="note">
-      <b>钉钉推送</b>：⚙ 参数 → 📱 钉钉推送 → 填入机器人 Webhook 的 <code>access_token</code>（加签密钥可选）→
-      启用 → 发送测试消息。钉钉机器人硬限 <b>20 条/分钟</b>，所以信号会先在聚合窗口内合并成一条再推。
-    </div>
-    <div class="note warn">
-      <b>为什么不能直接在这个页面上运行？</b>
-      本项目的核心是 Node 后端（维护 200 标的 × 15 级别的K线、每秒跑信号引擎、推 SSE、发钉钉）。
-      你现在看到的是 GitHub Pages —— 它<b>只能托管静态文件</b>，跑不了后端。
-      请按上面的命令在本机运行，得到的才是完整功能。
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2><span class="num">06</span>验证</h2>
-    <p class="lead">所有结论都有可复现的脚本，不是「跑通就算」。</p>
-    <div class="tblwrap">
-      <table>
-        <thead><tr><th>测试</th><th>项数</th><th>覆盖内容</th></tr></thead>
-        <tbody>
-          <tr><td><code>tools/verify.mjs</code></td><td class="num">98</td><td>K线合成对照币安原生、指标、共振逻辑、缠论背驰、成笔链、序列合并</td></tr>
-          <tr><td><code>tools/verify-push.mjs</code></td><td class="num">41</td><td>钉钉加签/聚合/限流/重试（Mock 服务端<b>独立重算 HMAC</b> 验签）</td></tr>
-          <tr><td><code>tools/uitest.mjs</code></td><td class="num">91</td><td>真实 Chrome 驱动：布局、交互、图表绘制像素、滚动、tooltip</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="muted" style="margin-top:14px">
-      合计 <b>230 项</b>。测试本身也踩过不少坑：跨脚本顶层重名让整个脚本不执行、改图表尺寸会重置十字光标、
-      断言依赖某一瞬间的采样导致假失败……这些都记在 README 的「注意事项」里。
-    </p>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2><span class="num">07</span>目录结构</h2>
-    <pre><code>binance-resonance-monitor/
-├── server.js              服务入口（HTTP + SSE + 定时器）
-├── src/
-│   ├── config.js          级别定义 / 市场档案 / 默认参数
-│   ├── rest.js            令牌桶 + 权重调速 + 429/418 退避
-│   ├── market.js          涨幅榜前 200 / 订阅 / 播种 / 对账
-│   ├── series.js          K线序列（合成、指标、滚动合并、缠论缓存）
-│   ├── indicators.js      SMA / EMA / MACD
-│   ├── chan.js            缠论：包含处理 / 分型 / 标准笔 / MACD 面积背驰
-│   ├── signals.js         共振判定 + 背驰过滤 + 回踩成笔链
-│   ├── engine.js          每秒扫描、快照、报警
-│   ├── tickfeed.js        合约实时价驱动（!bookTicker + REST 修正）
-│   ├── push.js            钉钉推送（加签 / 聚合 / 限流退避 / 重试）
-│   └── tracker.js         信号绩效追踪（+1h/+4h/+24h 实际结算）
-├── public/                前端（index.html / app.js / chart.js / style.css）
-│   └── vendor/            lightweight-charts.js（本地化，不走 CDN）
-├── tools/                 测试 / 回测 / 探测脚本
-└── docs/                  ← 本页</code></pre>
-  </div>
-</section>
-
+<!-- 币种详情 -->
+<div id="detail" class="drawer hidden">
+  <div class="dhead"><h2 id="d-title">币种详情</h2><button class="btn tiny" data-close>✕</button></div>
+  <div class="dbody" id="d-body"></div>
 </div>
 
-<footer>
-  <div class="wrap">
-    MIT License · 数据来自币安公开接口，只读不下单<br>
-    仅用于行情观察与技术学习，<b>不构成任何投资建议</b>
-  </div>
-</footer>
+<!-- 信号绩效追踪 -->
+<div id="perf" class="drawer hidden">
+  <div class="dhead"><h2>📊 信号绩效追踪</h2><button class="btn tiny" data-close>✕</button></div>
+  <div class="dbody" id="p-body"></div>
+</div>
 
+<div id="toasts"></div>
+
+<script>
+/* 纯前端版引导：先把 /api/* 与 EventSource 换成内存实现，再加载界面脚本。
+   界面脚本必须保持「经典脚本」身份（它们靠全局作用域互相访问），
+   所以这里用动态 import + 顺序注入，而不是把它们变成 module。 */
+(function () {
+  var banner = document.getElementById('web-mode-note');
+  function fail(e) {
+    var msg = (e && (e.stack || e.message)) || String(e);
+    if (banner) { banner.style.display = 'block'; banner.innerHTML = '<b>启动失败</b>：' + msg; }
+    console.error('[web] 启动失败', e);
+  }
+  import('./src/browser/boot.js').then(function () {
+    if (banner) banner.style.display = 'block';
+    function load(src) {
+      return new Promise(function (res, rej) {
+        var s = document.createElement('script');
+        s.src = src; s.onload = res; s.onerror = function () { rej(new Error('脚本加载失败：' + src)); };
+        document.body.appendChild(s);
+      });
+    }
+    return load('./vendor/lightweight-charts.js')
+      .then(function () { return load('./app.js'); })
+      .then(function () { return load('./chart.js'); });
+  }).catch(fail);
+})();
+</script>
 </body>
 </html>

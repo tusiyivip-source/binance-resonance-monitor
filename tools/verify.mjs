@@ -8,6 +8,7 @@
  * 5) 真实行情冒烟测试
  */
 import { CandleSeries } from '../src/series.js';
+import { memoryStorage } from '../src/file-storage.js';
 import * as CandleSeriesMod from '../src/series.js';
 import { buildSMA, buildEMA } from '../src/indicators.js';
 import { evaluateSymbol, analyzeLevel, findResonance, triplesFor, strokeChain, checkStrokeChain } from '../src/signals.js';
@@ -334,7 +335,7 @@ section('6. 绩效追踪模块（信号结算与统计）');
 
   // 结算：构造一条 2 小时前的记录，应能算出 +1h，且 +4h 仍为待结算
   const tmp = 'data/_test-signals.jsonl';
-  const tr = new Tracker(tmp, { info() { }, warn() { }, error() { } });
+  const tr = new Tracker(tmp, { info() { }, warn() { }, error() { } }, memoryStorage());
   tr.entries.length = 0;
   const now = Date.now();
   const e = tr.record({
