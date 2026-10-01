@@ -600,6 +600,8 @@ node tools\sweep.mjs --symbols=30 --hours=48 --windows=5   :: 参数网格 + 多
 node tools\uitest.mjs                              :: 页面布局与交互 91 项（需服务在跑）
 node tools\probe-alertzoom.mjs                     :: 验证报警视图的尺寸档位与滚动，并截图
 node tools\probe-stroke-chain.mjs                  :: 实测「回踩成笔链」的拦截率与缺失分布
+node tools\shot-pages.mjs                         :: 本地渲染展示页并截图（校验 4 张图/无横向溢出）
+node tools\verify-pages.mjs                       :: 复核 GitHub Pages 线上站点（资源 + 真实浏览器渲染）
 node tools\check-globals.mjs                       :: 检查 app.js / chart.js 顶层符号冲突（node --check 查不出来）
 node tools\probe-alertchart.mjs                    :: 验证报警级别K线视图，并截图
 node tools\shot-chart.mjs                          :: K线图视图截图
