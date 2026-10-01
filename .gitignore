@@ -18,3 +18,7 @@ node_modules/
 npm-debug.log*
 pnpm-lock.yaml
 package-lock.json
+
+# 展示页本地预览截图
+docs-preview.png
+docs-hero.png
