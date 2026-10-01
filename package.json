@@ -1,0 +1,14 @@
+{
+  "name": "binance-multi-timeframe-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "币安多级别共振盯盘系统 — 涨幅榜前200币种 × 13个级别，MA7/EMA7 回踩突破 + 多级别共振自动报警",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "verify": "node tools/verify.mjs",
+    "backtest": "node tools/backtest.mjs"
+  },
+  "engines": { "node": ">=22.0.0" }
+}

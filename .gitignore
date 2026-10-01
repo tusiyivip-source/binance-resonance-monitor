@@ -1,0 +1,20 @@
+# 运行时数据（信号绩效库、推送配置）—— 不进版本库
+data/
+*.log
+
+# 回测/扫描的中间产物（体积大、可重跑）
+backtest-result.json
+sweep-result.json
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node（本项目零依赖，正常情况下不存在）
+node_modules/
+npm-debug.log*
+pnpm-lock.yaml
+package-lock.json
