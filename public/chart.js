@@ -338,9 +338,12 @@ function paintCard(view, i, it) {
     const st = head.querySelector('.st');
     st.textContent = it.mode === 'closed' ? '已确认' : '预警';
     st.className = 'st ' + (it.mode === 'closed' ? 's1' : 's3');
-    head.querySelector('.sp').innerHTML =
-      `<span class="grp">${String(it.group).replace(/>/g, '→')}</span>`
-      + `<span class="sc">${it.score}分</span>` + divBadge;
+    // 形态提醒没有评分，用方向标签代替；共振信号仍显示组合与评分
+    const isDual = it.kind === 'dual';
+    head.querySelector('.sp').innerHTML = isDual
+      ? `<span class="grp">${it.side === 'long' ? '双阴不破 · 看多' : '双阳不穿 · 看空'}</span>` + (divBadge ? ' ' + divBadge : '')
+      : `<span class="grp">${String(it.group).replace(/>/g, '→')}</span>`
+        + `<span class="sc">${it.score}分</span>` + divBadge;
     const t = new Date(it.at || Date.now());
     const p = n => String(n).padStart(2, '0');
     head.querySelector('.px').textContent =

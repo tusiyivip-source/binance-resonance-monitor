@@ -67,6 +67,102 @@ function findPullback(series, ma, idx, maxBack, tol) {
 }
 
 /**
+ * 回踩形态「两根阴K不破均线」：
+ *   · 最近 `bars` 根K线**都是阴线**（收盘 < 开盘）
+ *   · 每根的**收盘价**都没有跌破 MA7，也没有跌破 EMA7（**影线允许插破**）
+ *
+ * 含义：上涨途中**极浅的回调** —— 连收盘都没能把价格压到均线下方，
+ * 说明抛压已经枯竭，是「跌无可跌」的典型形态。
+ *
+ * 注意与 findPullback 的区别：那个要求「最低价触及均线」（影线碰到才算回踩），
+ * 这个要求「收盘始终没离开均线上方」（价格压根没破位）。
+ */
+export function findTwoBearHold(series, ind, idx, bars = 2, requireBear = true) {
+  if (idx < bars) return null;
+  let lowest = Infinity, top = -Infinity;
+  for (let k = 1; k <= bars; k++) {
+    const i = idx - k;
+    const m = ind.ma7[i], e = ind.ema7[i];
+    if (!Number.isFinite(m) || !Number.isFinite(e)) return null;
+    if (requireBear && !(series.c[i] < series.o[i])) return null;   // 大级别可选是否要求阴K
+    if (series.c[i] < m || series.c[i] < e) return null;            // 收盘不得跌破两条均线
+    if (series.l[i] < lowest) lowest = series.l[i];
+    if (series.h[i] > top) top = series.h[i];
+  }
+  return {
+    bars,
+    top,
+    low: lowest,
+    depth: top > 0 ? (top - lowest) / top : 0,
+    // 影线插破的幅度（0 = 完全没有插破；>0 表示最低价曾到均线下方）
+    pierce: null,
+  };
+}
+
+/**
+ * 形态「双阳不穿破均线」（做空）—— findTwoBearHold 的镜像：
+ *   · 最近 `bars` 根K线**都是阳线**（收盘 > 开盘）
+ *   · 每根的**收盘价**都没有涨破 MA7，也没有涨破 EMA7（**影线允许刺破**）
+ *
+ * 含义：下跌途中**极浅的反弹** —— 连收盘都顶不回均线上方，说明买盘枯竭。
+ */
+export function findTwoBullHold(series, ind, idx, bars = 2) {
+  if (idx < bars) return null;
+  let highest = -Infinity, bottom = Infinity;
+  for (let k = 1; k <= bars; k++) {
+    const i = idx - k;
+    const m = ind.ma7[i], e = ind.ema7[i];
+    if (!Number.isFinite(m) || !Number.isFinite(e)) return null;
+    if (!(series.c[i] > series.o[i])) return null;           // 必须是阳K
+    if (series.c[i] > m || series.c[i] > e) return null;     // 收盘不得涨破两条均线
+    if (series.h[i] > highest) highest = series.h[i];
+    if (series.l[i] < bottom) bottom = series.l[i];
+  }
+  return { bars, top: highest, low: bottom, depth: highest > 0 ? (highest - bottom) / highest : 0 };
+}
+
+/**
+ * 双阴不破 / 双阳不穿 的**完整判定**。
+ *
+ * 相比直接调用 findTwoBearHold，这里修正了两处：
+ *
+ *   1. **K线窗口含刚收盘的那根**：形态是 idx、idx-1，而不是 idx-1、idx-2。
+ *      原来那样会在收盘之后**晚一整根K线**才发现形态（1时级别上就是晚 1 小时）。
+ *      实现上用 idx+1 调用（那两个函数的窗口是 idx'-1 … idx'-bars），即可把窗口右移到 idx。
+ *
+ *   2. **增加两条前置条件**（用户要求）：
+ *      · 均线方向：做多要求 MA7 向上，做空要求 MA7 向下
+ *      · 前置趋势：形态出现之前，价格必须已在均线同侧持续 N 根
+ *
+ * @param {number} dir 1 = 做多（双阴不破）, -1 = 做空（双阳不穿）
+ */
+export function dualPattern(series, ind, idx, cfg, dir) {
+  const bars = cfg.dualBars ?? 2;
+  const shape = dir > 0
+    ? findTwoBearHold(series, ind, idx + 1, bars, true)
+    : findTwoBullHold(series, ind, idx + 1, bars);
+  if (!shape) return null;
+
+  // 均线方向
+  if (cfg.dualRequireMaSlope) {
+    const a = ind.ma7[idx], b = ind.ma7[idx - 1];
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    if (dir > 0 ? !(a > b) : !(a < b)) return null;
+  }
+
+  // 前置趋势：形态的 bars 根之前，再往前 prev 根都必须在均线同侧
+  const prev = cfg.dualPrevBars ?? 0;
+  for (let k = 0; k < prev; k++) {
+    const i = idx - bars - k;
+    if (i < 0) return null;
+    const m = ind.ma7[i];
+    if (!Number.isFinite(m)) return null;
+    if (dir > 0 ? !(series.c[i] > m) : !(series.c[i] < m)) return null;
+  }
+  return shape;
+}
+
+/**
  * 分析单个级别。
  * @param {import('./series.js').CandleSeries} series
  * @param {'closed'|'live'} mode closed=只用已收盘K线（不重绘）；live=含正在形成的K线（预警）
@@ -95,6 +191,21 @@ export function analyzeLevel(series, cfg, mode) {
   const crossUpEma7In = findCrossUp(series, ind.ema7, idx, 20);
   const crossDown7In = findCrossDown(series, ind.ma7, idx, 20);
   const pb = findPullback(series, ind.ma7, idx, 20, cfg.pullbackTolerance);
+  // 回踩形态「两根阴K不破均线」+ 触发「收盘同时站上 MA7 与 EMA7」
+  const twoBear = findTwoBearHold(series, ind, idx, cfg.pullbackBars ?? 2);
+  const aboveBoth = cur.ema7 != null && cur.c > cur.ma7 && cur.c > cur.ema7;
+  // 盯盘用：连续 N 根收盘不破均线（不要求阴K）+ 收盘同时跌破两条均线
+  const holdMa = findTwoBearHold(series, ind, idx, cfg.pullbackBars ?? 2, false) !== null;
+  // 盯盘专用：按 watchBigBars / watchRequireBear 计算（信号引擎的 twoBear 用的是 pullbackBars，两者口径不同）
+  // 独立提醒用：按 dualBars 计算的双阴 / 双阳形态
+  const twoBearD = dualPattern(series, ind, idx, cfg, 1);
+  const twoBullD = dualPattern(series, ind, idx, cfg, -1);
+  const candleT = series.t[idx];
+
+  const watchBig = cfg.watchEnabled
+    ? findTwoBearHold(series, ind, idx, cfg.watchBigBars ?? 2, cfg.watchRequireBear !== false) !== null
+    : false;
+  const belowBoth = cur.ema7 != null && cur.c < cur.ma7 && cur.c < cur.ema7;
 
   // —— 缠论背驰（只在启用过滤时才算，避免无谓开销） ——
   let chanState = null;
@@ -107,7 +218,7 @@ export function analyzeLevel(series, cfg, mode) {
   }
   // —— 笔状态（回踩成笔链用） ——
   let stroke = null;
-  if (cfg.requireStrokeChain) stroke = series.strokeInfo(idx, cfg.beichiMinBars ?? 5);
+  if (cfg.requireStrokeChain || cfg.watchEnabled) stroke = series.strokeInfo(idx, cfg.beichiMinBars ?? 5);
 
   return {
     key: series.key,
@@ -125,6 +236,12 @@ export function analyzeLevel(series, cfg, mode) {
     crossUpEma7In,
     crossDown7In,
     pullbackIn: pb ? pb.bars : null,
+    twoBear, aboveBoth, holdMa, belowBoth, watchBig,
+    twoBearD, twoBullD, candleT,
+    strokeOk: !!(stroke && stroke.down && stroke.down.bars >= 4),
+    strokeBars: stroke?.down?.bars ?? null,
+    twoBearBars: twoBear ? twoBear.bars : null,
+    twoBearDepth: twoBear ? twoBear.depth : null,
     pullbackDepth: pb ? pb.depth : null,
     distMa7Pct: ((cur.c - cur.ma7) / cur.ma7) * 100,
     distEma7Pct: cur.ema7 ? ((cur.c - cur.ema7) / cur.ema7) * 100 : null,
@@ -268,10 +385,24 @@ export function findResonance(views, cfg, mode) {
     // —— 基准级别触发条件 ——
     if (cfg.requireBaseBull && !base.bull) continue;
     if (cfg.requireEma7 && base.aboveEma7 !== true) continue;
-    if (base.pullbackIn == null || base.pullbackIn > cfg.pullbackLookback) continue;
-    if (base.crossUp7In == null || base.crossUp7In > cfg.triggerLookback) continue;
-    // 上穿必须发生在回踩之后（或同一根K线）
-    if (base.pullbackIn < base.crossUp7In) continue;
+
+    // 这里有两种「回踩形态」，二选一：
+    //
+    //  touch（默认旧行为）：价格回踩到**最低价触及 MA7**，收盘站住 → 之后才发生「上穿 MA7」事件
+    //
+    //  twoBearHold：**两根阴K下跌，但收盘始终没有跌破 MA7 与 EMA7**（影线允许插破），
+    //               随后当前K线收盘同时站上两条均线即触发。
+    //               这是「极浅回调 + 抛压枯竭」＝ 跌无可跌的形态；因为价格压根没离开均线上方，
+    //               所以不存在「上穿 MA7」这个事件，触发条件改用「收盘同时站上两条均线」。
+    if (cfg.pullbackPattern === 'twoBearHold') {
+      if (!base.twoBear) continue;
+      if (!base.aboveBoth) continue;
+    } else {
+      if (base.pullbackIn == null || base.pullbackIn > cfg.pullbackLookback) continue;
+      if (base.crossUp7In == null || base.crossUp7In > cfg.triggerLookback) continue;
+      // 上穿必须发生在回踩之后（或同一根K线）
+      if (base.pullbackIn < base.crossUp7In) continue;
+    }
 
     const mid = views[midLv.key];
     if (!mid) continue;
@@ -423,8 +554,44 @@ export function evaluateSymbol(symbol, seriesMap, cfg, includeLive = true) {
     };
   }
 
+  // 盯盘视图：只取对应表里用到的级别，避免无谓开销
+  const watch = {};
+  if (cfg.watchEnabled) {
+    const need = new Set();
+    for (const g of (cfg.watchGroups ?? [])) {
+      if (g.enabled === false) continue;
+      need.add(g.big); need.add(g.mid); need.add(g.base);
+      for (const k of (g.inner ?? [])) need.add(k);
+      if (g.adjacent) need.add(g.adjacent);
+    }
+    for (const k of need) {
+      const v = closedViews[k];
+      if (!v) continue;
+      watch[k] = {
+        twoBear: v.watchBig, holdMa: v.watchBig, aboveBoth: v.aboveBoth, belowBoth: v.belowBoth,
+        above7: v.above7, strokeOk: v.strokeOk, strokeBars: v.strokeBars,
+        close: v.close, ma7: v.ma7, ema7: v.ema7, candleT: v.candleT,
+      };
+    }
+  }
+
+  // 独立提醒视图：双阴不破 / 双阳不穿
+  const dual = {};
+  if (cfg.dualEnabled) {
+    for (const k of (cfg.dualLevels ?? [])) {
+      const v = closedViews[k];
+      if (!v) continue;
+      dual[k] = {
+        bear: v.twoBearD, bull: v.twoBullD,
+        close: v.close, ma7: v.ma7, ema7: v.ema7, candleT: v.candleT,
+      };
+    }
+  }
+
   return {
     symbol,
+    watch,
+    dual,
     bullCount: Math.max(closedRes.bullCount, liveRes.bullCount),
     aboveCount,
     levels,
@@ -453,6 +620,20 @@ export function analyzeLevelAtIndex(series, ind, idx, cfg) {
   else if (cur.c < cur.ma7 && cur.ma7 <= cur.ma25) code = STATE.BEAR_ALIGN;
   else code = STATE.NEUTRAL;
   const pb = findPullback(series, ind.ma7, idx, 20, cfg.pullbackTolerance);
+  const twoBear = findTwoBearHold(series, ind, idx, cfg.pullbackBars ?? 2);
+  const aboveBoth = cur.ema7 != null && cur.c > cur.ma7 && cur.c > cur.ema7;
+  // 盯盘用：连续 N 根收盘不破均线（不要求阴K）+ 收盘同时跌破两条均线
+  const holdMa = findTwoBearHold(series, ind, idx, cfg.pullbackBars ?? 2, false) !== null;
+  // 盯盘专用：按 watchBigBars / watchRequireBear 计算（信号引擎的 twoBear 用的是 pullbackBars，两者口径不同）
+  // 独立提醒用：按 dualBars 计算的双阴 / 双阳形态
+  const twoBearD = dualPattern(series, ind, idx, cfg, 1);
+  const twoBullD = dualPattern(series, ind, idx, cfg, -1);
+  const candleT = series.t[idx];
+
+  const watchBig = cfg.watchEnabled
+    ? findTwoBearHold(series, ind, idx, cfg.watchBigBars ?? 2, cfg.watchRequireBear !== false) !== null
+    : false;
+  const belowBoth = cur.ema7 != null && cur.c < cur.ma7 && cur.c < cur.ema7;
   let chanState = null;
   if (cfg.filterBeichi) {
     chanState = series.beichiState(idx, {
@@ -463,7 +644,7 @@ export function analyzeLevelAtIndex(series, ind, idx, cfg) {
   }
   // —— 笔状态（回踩成笔链用） ——
   let stroke = null;
-  if (cfg.requireStrokeChain) stroke = series.strokeInfo(idx, cfg.beichiMinBars ?? 5);
+  if (cfg.requireStrokeChain || cfg.watchEnabled) stroke = series.strokeInfo(idx, cfg.beichiMinBars ?? 5);
   return {
     key: series.key, code, close: cur.c, ma7: cur.ma7, ma25: cur.ma25, ema7: cur.ema7,
     ma7Up,
@@ -476,6 +657,12 @@ export function analyzeLevelAtIndex(series, ind, idx, cfg) {
     crossUpEma7In: findCrossUp(series, ind.ema7, idx, 20),
     crossDown7In: findCrossDown(series, ind.ma7, idx, 20),
     pullbackIn: pb ? pb.bars : null,
+    twoBear, aboveBoth, holdMa, belowBoth, watchBig,
+    twoBearD, twoBullD, candleT,
+    strokeOk: !!(stroke && stroke.down && stroke.down.bars >= 4),
+    strokeBars: stroke?.down?.bars ?? null,
+    twoBearBars: twoBear ? twoBear.bars : null,
+    twoBearDepth: twoBear ? twoBear.depth : null,
     pullbackDepth: pb ? pb.depth : null,
     distMa7Pct: ((cur.c - cur.ma7) / cur.ma7) * 100,
     volRatio: cur.volMa20 ? cur.v / cur.volMa20 : null,

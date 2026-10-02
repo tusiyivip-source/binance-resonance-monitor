@@ -19,10 +19,14 @@ npm-debug.log*
 pnpm-lock.yaml
 package-lock.json
 
-# չʾҳ����Ԥ����ͼ
+# չʾҳ����Ԥ����ͼ
 docs-preview.png
 docs-hero.png
 
 docs/img/pages-live.png
 
 docs/img/web-mode.png
+
+# 校验脚本产生的截图（体积大，不入库）
+docs/img/alerts-dual.png
+docs/img/alerts-chart.png

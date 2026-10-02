@@ -28,11 +28,25 @@ export class TokenBucket {
       await sleep(Math.max(5, Math.min(need, 500)));
     }
   }
-  /** 用币安回报的真实用量校准本地桶：真实配额越紧，本地桶上限压得越低 */
+  /**
+   * 用币安回报的真实用量校准本地桶。
+   *
+   * 口径要点（踩过坑，务必按这个来）：
+   *   · `x-mbx-used-weight-1m` 是**已用量**，合约下这个值本身的上限就是 2400。
+   *   · 不能简单用 `limit - used` 当余量：跑到满额时余量为 0，本地桶会被压到 0 → **彻底停摆**。
+   *     （把硬编码的 6000 改成 profile 的 2400 时就犯过这个错，播种直接卡死。）
+   *   · 正确做法：拿**我们自己的预算**（weightPerMinute，合约 1900）当基准 ——
+   *     用量没超过预算就不限速；超过预算才线性收紧，为的是补上本地记账与实际用量之间的偏差。
+   *   · 再留一个下限，保证任何情况下都不会完全停滞（真被限流由 429/418 分支处理）。
+   */
   calibrate(usedWeight) {
     this._refill();
-    const remaining = Math.max(0, 6000 - usedWeight);
-    const cap = Math.min(this.tokens, this.max * Math.min(1, remaining / 6000));
+    const limit = APP.profile.officialWeightCap || APP.weightPerMinute;
+    const budget = Math.min(APP.weightPerMinute, limit);
+    const over = Math.max(0, usedWeight - budget);          // 超出自身预算多少
+    const span = Math.max(1, limit - budget);               // 从预算到硬上限的余量
+    const ratio = Math.max(0, 1 - over / span);
+    const cap = Math.max(this.max * 0.2, this.max * ratio);
     if (cap < this.tokens) this.tokens = cap;
   }
 }
@@ -100,7 +114,9 @@ export class RestClient {
           this.bannedUntil = Date.now() + backoff;
           this.rotateHost();
           this.stats.errors++;
-          if (attempt < retries) { await sleep(backoff); continue; }
+          // 退避要有上限：Binance 的 retry-after 可能是几十分钟，
+          // 无上限地 sleep 会让调用方（探测脚本 / 批量任务）看起来像卡死。
+          if (attempt < retries) { await sleep(Math.min(backoff, 30_000)); continue; }
           throw new Error(`HTTP ${res.status} rate limited`);
         }
         if (res.status === 451 || res.status === 403) {

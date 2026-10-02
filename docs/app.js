@@ -328,6 +328,16 @@ function renderAlerts() {
     const el = document.createElement('div');
     el.className = 'acard ' + (a.confirmed ? 'confirmed' : 'pre');
     const extra = (a.matchCount ?? (a.combos ? a.combos.length : 1)) - 1;
+    // 防御：不同来源的报警字段并不一致（形态提醒没有 bullCount / distBaseMa7Pct），
+    // 直接 .toFixed() 会抛异常并让整个面板渲染中断 —— 这里全部做存在性判断。
+    const isDual = a.kind === 'dual';
+    const chainTxt = isDual
+      ? (lvLabel(a.level || a.base) + (a.side === 'long' ? ' · 双阴不破' : ' · 双阳不穿'))
+      : (lvLabel(a.base) + ' → ' + lvLabel(a.mid) + ' → ' + lvLabel(a.big));
+    const bullTxt = Number.isFinite(a.bullCount) ? ('共振 ' + a.bullCount + ' 级') : '';
+    const distTxt = Number.isFinite(a.distBaseMa7Pct)
+      ? ('距MA7 ' + (a.distBaseMa7Pct >= 0 ? '+' : '') + a.distBaseMa7Pct.toFixed(2) + '%') : '';
+    const scoreTxt = isDual ? '' : (a.score + '分');
     // 信号后表现追踪：用当前价与信号价对比，便于用户自行验证信号有效性
     const now = PRICE.get(a.symbol);
     const since = (now && a.price) ? ((now - a.price) / a.price) * 100 : null;
@@ -338,14 +348,14 @@ function renderAlerts() {
         <span class="sym">${a.symbol}</span>
         <span class="badge2">${a.confirmed ? '已确认' : '预警'}</span>
         ${a.initial ? '<span class="badge3" style="background:#2a3444;color:#94a3b8">存量</span>' : ''}
-        <span class="score">${a.score}分</span>
+        <span class="score">${scoreTxt}</span>
       </div>
-      <div class="chain">${lvLabel(a.base)} → ${lvLabel(a.mid)} → ${lvLabel(a.big)}${extra > 0 ? ` <span style="color:#5b6f8c">(+${extra} 组)</span>` : ''}</div>
+      <div class="chain">${chainTxt}${extra > 0 ? ` <span style="color:#5b6f8c">(+${extra} 组)</span>` : ''}</div>
       <div class="txt">${a.text}</div>
       <div class="meta">
         <span>@${fmtPrice(a.price)}</span>
-        <span>共振 ${a.bullCount} 级</span>
-        <span>距MA7 ${a.distBaseMa7Pct >= 0 ? '+' : ''}${a.distBaseMa7Pct.toFixed(2)}%</span>
+        ${bullTxt ? '<span>' + bullTxt + '</span>' : ''}
+        ${distTxt ? '<span>' + distTxt + '</span>' : ''}
         <span>${hhmmss(a.ts)}</span>
         ${sinceTxt}
       </div>`;
@@ -709,6 +719,10 @@ const CFG_FIELDS = [
   ['filterBeichi', 'bool'], ['beichiScope', 'str'], ['beichiMinBars', 'int'],
   ['beichiRatio', 'num'], ['beichiMinProgress', 'num'],
   ['requireStrokeChain', 'bool'], ['chainRequireAboveMa', 'bool'],
+  ['pullbackPattern', 'str'], ['pullbackBars', 'int'],
+  ['watchEnabled', 'bool'], ['watchBigBars', 'int'], ['watchRequireBear', 'bool'],
+  ['dualEnabled', 'bool'], ['dualBars', 'int'],
+  ['signalEnabled', 'bool'],
 ];
 const CFG_DEFAULTS = {
   minBullLevels: 3, pullbackLookback: 6, pullbackTolerance: 0.002, triggerLookback: 2,
@@ -717,8 +731,12 @@ const CFG_DEFAULTS = {
   baseMinIdx: 2, baseMaxIdx: 6, minScore: 0,
   filterBeichi: true, beichiScope: 'mid', beichiMinBars: 5, beichiRatio: 1.0, beichiMinProgress: 0.3,
   requireStrokeChain: true, chainRequireAboveMa: false,
+  pullbackPattern: 'twoBearHold', pullbackBars: 2,
+  watchEnabled: true, watchBigBars: 2, watchRequireBear: true,
+  dualEnabled: true, dualBars: 2, signalEnabled: false,
 };
 
+let CFG_SNAPSHOT = {};
 function fillCfgForm() {
   if (!cfg) return;
   for (const [k, t] of CFG_FIELDS) {
@@ -728,6 +746,24 @@ function fillCfgForm() {
     else if (t === 'pct') el.value = +(cfg[k] * 100).toFixed(3);
     else el.value = cfg[k];
   }
+  // 记录服务端的权威状态：保存时只提交用户真正改动过的字段。
+  // 否则界面上的陈旧值（例如某个开关在页面载入时是未勾选）会被当成用户意图写回服务端。
+  CFG_SNAPSHOT = readCfgForm();
+}
+
+/** 读当前表单值 */
+function readCfgForm() {
+  const v = {};
+  for (const [k, t] of CFG_FIELDS) {
+    const el = $('#c-' + k);
+    if (!el) continue;
+    if (t === 'bool') v[k] = el.checked;
+    else if (t === 'pct') v[k] = (+el.value || 0) / 100;
+    else if (t === 'int') v[k] = Math.round(+el.value);
+    else if (t === 'num') v[k] = +el.value || 0;
+    else v[k] = el.value;
+  }
+  return v;
 }
 async function postCfg(patch) {
   const r = await fetch('/api/config', {
@@ -738,19 +774,18 @@ async function postCfg(patch) {
   return cfg;
 }
 async function saveCfg() {
+  const now = readCfgForm();
   const patch = {};
-  for (const [k, t] of CFG_FIELDS) {
-    const el = $('#c-' + k);
-    if (!el) continue;
-    if (t === 'bool') patch[k] = el.checked;
-    else if (t === 'pct') patch[k] = (+el.value || 0) / 100;
-    else if (t === 'int') patch[k] = Math.round(+el.value);
-    else if (t === 'num') patch[k] = +el.value || 0;
-    else patch[k] = el.value;
+  for (const k of Object.keys(now)) {
+    // 与「服务端权威快照」一致的字段不提交 —— 界面陈旧值不会覆盖服务端
+    if (CFG_SNAPSHOT[k] !== undefined && CFG_SNAPSHOT[k] === now[k]) continue;
+    patch[k] = now[k];
   }
+  if (!Object.keys(patch).length) { toast('没有改动'); return; }
   await postCfg(patch);
   alerts = [];
   renderAlerts();
+  Object.assign(CFG_SNAPSHOT, patch);
   $('#cfg-msg').textContent = '✓ 已应用，重新开始扫描形态';
   setTimeout(() => { $('#cfg-msg').textContent = ''; }, 2600);
   toast('信号参数已更新');

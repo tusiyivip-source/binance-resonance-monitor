@@ -3,6 +3,8 @@
  */
 import { Emitter } from './emitter.js';
 import { LEVELS, LEVEL_KEYS, LEVEL_INDEX, VISIBLE_LEVELS, STATE, EVENT, APP } from './config.js';import { evaluateSymbol, describe, defaultSignalConfig } from './signals.js';
+import { Watcher } from './watch.js';
+import { DEFAULT_WATCH_GROUPS } from './config.js';
 
 const SWEEP_MS = 1000;
 const ALERT_TTL = 45 * 60_000;
@@ -24,6 +26,12 @@ export class Engine extends Emitter {
     this.evaluations = 0;
     this.signalCount = 0;
     this.beichiBlocked = 0;        // 累计拦截次数（按每轮评估累加）
+    // 两阶段盯盘：大级别预备 → 最小级别首次站上触发
+    this.watcher = new Watcher(log, DEFAULT_WATCH_GROUPS.map(g => ({ ...g })));
+    this.watchDbg = { seen: 0, enabled: 0, hasWatch: 0, called: 0, err: null };
+    // 独立形态提醒的去重表：同一 (币种, 级别, K线) 只提醒一次
+    this.dualSeen = new Map();
+    this.dualCount = { long: 0, short: 0 };
     this.strokeBlocked = 0;        // 因「回踩不够成笔」被拦下的次数
     this.beichiPerMin = 0;         // 近一分钟拦截次数
     this._beichiSnap = 0;
@@ -52,6 +60,15 @@ export class Engine extends Emitter {
   setConfig(patch) {
     const before = JSON.stringify(this.cfg);
     this.cfg = { ...this.cfg, ...patch };
+    if (patch.watchEnabled !== undefined || patch.watchBigBars !== undefined
+      || patch.watchRequireBear !== undefined || Array.isArray(patch.watchGroups)) {
+      this.watcher.setConfig({
+        watchEnabled: this.cfg.watchEnabled,
+        watchBigBars: this.cfg.watchBigBars,
+        watchRequireBear: this.cfg.watchRequireBear,
+        ...(Array.isArray(patch.watchGroups) ? { watchGroups: patch.watchGroups } : {}),
+      });
+    }
     if (JSON.stringify(this.cfg) !== before) {
       this.log.info('信号参数已更新：' + JSON.stringify(this.cfg));
       // 参数变化后允许同一形态重新报警
@@ -108,7 +125,63 @@ export class Engine extends Emitter {
     st.best = res.best;
     st.evaluatedAt = Date.now();
     this.beichiBlocked += res.beichiBlocked || 0;
+    this.watchDbg.seen++;
+    if (this.cfg.watchEnabled) this.watchDbg.enabled++;
+    if (res.watch) this.watchDbg.hasWatch++;
+    // 盯盘状态机（与信号引擎并行；它只在状态迁移那一刻报警）
+    if (this.cfg.watchEnabled && res.watch) {
+      let fired = [];
+      this.watchDbg.called++;
+      try { fired = this.watcher.update(st.symbol, res.watch, Date.now()); }
+      catch (e) { this.watchDbg.err = e.message; this.log.warn('盯盘状态机异常：' + e.message); }
+      for (const a of fired) {
+        this.alerts.push(a);
+        this.signalCount++;
+        this.emit('alert', a);
+        this.log.signal('👁 ' + a.symbol + ' ' + a.text);
+      }
+    }
+    // —— 独立形态提醒：双阴不破均线（多） / 双阳不穿破均线（空）——
+    //    只看**已收盘**的那根K线（analyzeLevel 的 closed 模式），第二根一收盘立刻提醒。
+    if (this.cfg.dualEnabled && res.dual) {
+      for (const [lv, d] of Object.entries(res.dual)) {
+        const dir = d.bear ? 'long' : (d.bull ? 'short' : null);
+        if (!dir) continue;
+        const key = 'dual|' + st.symbol + '|' + lv + '|' + d.candleT;
+        if (this.dualSeen.has(key)) continue;
+        this.dualSeen.set(key, Date.now());
+        this.dualCount[dir]++;
+        const label = (LEVELS.find(l => l.key === lv) || {}).label || lv;
+        const a = {
+          kind: 'dual', id: ++this.alertSeq, symbol: st.symbol, mode: 'dual',
+          side: dir, confirmed: true, level: lv, levelLabel: label,
+          group: dir === 'long' ? '双阴不破' : '双阳不穿',
+          base: lv, mid: null, big: null,
+          score: 0, price: d.close, candleT: d.candleT, ts: Date.now(), initial: false,
+          ma7: d.ma7, ema7: d.ema7,
+          // 右侧报警卡片要用的字段（形态提醒没有共振级别数，用当前多头排列级别数代替展示）
+          bullCount: st.bullCount ?? 0,
+          distBaseMa7Pct: (Number.isFinite(d.ma7) && d.ma7) ? ((d.close - d.ma7) / d.ma7) * 100 : null,
+          combos: [],
+          text: dir === 'long'
+            ? `【双阴不破】${label} 连续 ${this.cfg.dualBars} 根阴K收盘都没跌破 MA7/EMA7 —— 上涨途中浅回调、抛压枯竭`
+            : `【双阳不穿】${label} 连续 ${this.cfg.dualBars} 根阳K收盘都没涨破 MA7/EMA7 —— 下跌途中浅反弹、买盘枯竭`,
+        };
+        this.alerts.push(a);
+        this.signalCount++;
+        this.emit('alert', a);
+        this.log.signal((dir === 'long' ? '🔴 ' : '🟢 ') + a.symbol + ' ' + a.text);
+      }
+      // 去重表只保留最近 2000 条
+      if (this.dualSeen.size > 2000) {
+        const keys = [...this.dualSeen.keys()].slice(0, this.dualSeen.size - 2000);
+        for (const k of keys) this.dualSeen.delete(k);
+      }
+    }
     this.strokeBlocked += res.strokeBlocked || 0;
+    // —— 共振信号引擎总闸 ——
+    //    关掉之后不再产生「多级别共振」报警；上面的双阴/双阳形态提醒不受影响。
+    if (!this.cfg.signalEnabled) { st.combos = null; st.best = null; return 0; }
     if (!res.best) { st.combos = null; return 0; }
 
     const initial = forceNew ? false : !!this.initialPhase;
@@ -292,17 +365,25 @@ export class Engine extends Emitter {
       const a = this.alerts[k];
       const st = this.market.symbols.get(a.symbol);
       if (!st) { skipped.push({ symbol: a.symbol, why: 'no-symbol' }); continue; }
-      // 优先用报警自带的 mid；兼容旧数据时从 group 里取第 2 段
+      // 取级别，三类报警分别处理：
+      //   共振信号 → mid（组合里的确认级别）
+      //   形态提醒 → level（双阴/双阳只看一个级别）
+      //   两阶段盯盘 → base（最小级别）
       const key = (a.mid && LEVEL_INDEX[a.mid] != null) ? a.mid
-        : (typeof a.group === 'string' && a.group.includes('>') ? a.group.split('>')[1] : null);
-      if (!key || LEVEL_INDEX[key] == null) { skipped.push({ symbol: a.symbol, why: 'no-mid' }); continue; }
+        : (a.level && LEVEL_INDEX[a.level] != null) ? a.level
+          : (a.base && LEVEL_INDEX[a.base] != null) ? a.base
+            : (typeof a.group === 'string' && a.group.includes('>') ? a.group.split('>')[1] : null);
+      if (!key || LEVEL_INDEX[key] == null) { skipped.push({ symbol: a.symbol, why: 'no-level-key', group: a.group }); continue; }
       const lvl = this.levelPayload(st, key, bars);
       if (!lvl) { skipped.push({ symbol: a.symbol, why: 'no-level' }); continue; }
       items.push({
         ...lvl,
         symbol: a.symbol,
         alertId: a.id,
-        mode: a.mode,
+        kind: a.kind ?? 'resonance',
+        side: a.side ?? null,
+        // 形态提醒是「K线已收盘」的确认信号，用 closed 让卡片按已确认样式渲染
+        mode: a.kind === 'dual' ? 'closed' : a.mode,
         score: a.score,
         group: a.group,
         base: a.base, mid: a.mid, big: a.big,
@@ -321,6 +402,9 @@ export class Engine extends Emitter {
       items,
     };
   }
+
+  /** 盯盘名单（预备 / 已触发） */
+  watchSnapshot(limit = 60) { return this.watcher.snapshot(limit); }
 
   /** 单币种明细 */
   detail(symbol) {    const st = this.market.symbols.get(symbol);
@@ -359,6 +443,13 @@ export class Engine extends Emitter {
       evaluations: this.evaluations,
       signalCount: this.signalCount,
       beichiBlocked: this.beichiBlocked,
+      watch: this.watcher.snapshot(0),
+      watchDbg: this.watchDbg,
+      dual: { ...this.dualCount, seen: this.dualSeen.size, cfg: {
+        enabled: this.cfg.dualEnabled, levels: this.cfg.dualLevels, bars: this.cfg.dualBars,
+      } },
+      watchArmed: this.watcher.stats.armed,
+      watchFired: this.watcher.stats.fired,
       strokeBlocked: this.strokeBlocked,
       beichiPerMin: this.beichiPerMin,
       activeSignals: this.activeBySymbol.size,

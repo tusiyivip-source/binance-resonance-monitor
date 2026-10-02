@@ -11,8 +11,9 @@ import { CandleSeries } from '../src/series.js';
 import { memoryStorage } from '../src/file-storage.js';
 import * as CandleSeriesMod from '../src/series.js';
 import { buildSMA, buildEMA } from '../src/indicators.js';
-import { evaluateSymbol, analyzeLevel, findResonance, triplesFor, strokeChain, checkStrokeChain } from '../src/signals.js';
-import { LEVELS, VISIBLE_LEVELS, DEFAULT_SIGNAL, DEFAULT_GROUPS, LEVEL_INDEX, APP } from '../src/config.js';
+import { evaluateSymbol, analyzeLevel, findResonance, triplesFor, strokeChain, checkStrokeChain, findTwoBearHold, findTwoBullHold, dualPattern } from '../src/signals.js';
+import { LEVELS, VISIBLE_LEVELS, DEFAULT_SIGNAL, DEFAULT_GROUPS, LEVEL_INDEX, APP, DEFAULT_WATCH_GROUPS } from '../src/config.js';
+import { Watcher } from '../src/watch.js';
 
 // 验证脚本自己控制序列保留上限，避免受实盘 maxCandlesKept 影响导致对比样本数漂移
 APP.maxCandlesKept = 3000;
@@ -28,7 +29,7 @@ const section = t => results.push(`\n\u001b[36m▌${t}\u001b[0m`);
 // 基线配置：显式关掉「回踩成笔链」与「背驰过滤」这两个新增过滤器。
 // 第 3/4/9 节测的是**原有触发逻辑**，用合成K线（分型结构很稀疏）根本凑不出成笔链，
 // 开着会把旧断言全部打成 0 命中。两个过滤器各自在第 8/9、11 节单独验证。
-const cfg = { ...DEFAULT_SIGNAL, requireStrokeChain: false, filterBeichi: false };
+const cfg = { ...DEFAULT_SIGNAL, signalEnabled: true, requireStrokeChain: false, filterBeichi: false, pullbackPattern: 'touch' };
 const MIN = 60_000;
 
 /* ============ 1. 合成K线 vs 币安原生K线 ============ */
@@ -890,6 +891,394 @@ section('11. 回踩成笔链（笔延续级别）');
     ok('★ 报警文案写明「回踩已带动 X/Y/Z 全部成笔（笔延续至 N）」',
       /全部成笔/.test(txt) && /笔延续至 15分/.test(txt) && /5分\/10分\/15分/.test(txt), txt);
   }
+}
+
+/* ============ 12. 回踩形态「两根阴K不破均线」 ============ */
+section('12. 回踩形态「两根阴K不破均线」（跌无可跌）');
+{
+  /* findTwoBearHold 只读 series.{o,h,l,c} 与 ind.{ma7,ema7}，可以直接喂普通对象 */
+  const mk = (candles, ma7, ema7) => ({
+    s: {
+      o: candles.map(c => c[0]), h: candles.map(c => c[1]),
+      l: candles.map(c => c[2]), c: candles.map(c => c[3]),
+    },
+    ind: { ma7: candles.map(() => ma7), ema7: candles.map(() => ema7) },
+  });
+  // [开, 高, 低, 收]；idx=3 是触发K，看它前面 2 根（idx 1、2）
+  const base = [
+    [10.0, 10.8, 9.9, 10.6],   // 0 上涨
+    [10.6, 10.7, 10.2, 10.1],  // 1 阴K
+    [10.1, 10.2, 9.8, 10.0],   // 2 阴K（影线插到 9.8）
+    [10.0, 10.6, 9.95, 10.5],  // 3 触发K
+  ];
+  const MA = 9.5, EMA = 9.6;
+
+  {
+    const { s, ind } = mk(base, MA, EMA);
+    const r = findTwoBearHold(s, ind, 3, 2);
+    ok('★ 两根阴K + 收盘均在 MA7/EMA7 之上 → 形态成立',
+      !!r && r.bars === 2, r ? `bars=${r.bars} 回调深度 ${(r.depth * 100).toFixed(2)}%` : 'null');
+  }
+  {
+    // 影线插破均线（最低 9.4 < MA 9.5），但收盘仍在均线上 → 仍应成立
+    const cs = base.map((c, i) => i === 2 ? [10.1, 10.2, 9.4, 10.0] : c);
+    const { s, ind } = mk(cs, MA, EMA);
+    ok('★ 影线可以插破均线（收盘站住即可）',
+      findTwoBearHold(s, ind, 3, 2) !== null, `最低 ${Math.min(...s.l.slice(1, 3))} < MA ${MA}`);
+  }
+  {
+    const cs = base.map((c, i) => i === 2 ? [9.9, 10.2, 9.8, 10.0] : c);   // 第 2 根改阳线
+    const { s, ind } = mk(cs, MA, EMA);
+    ok('★ 有一根不是阴K → 不成立', findTwoBearHold(s, ind, 3, 2) === null);
+  }
+  {
+    const cs = base.map((c, i) => i === 2 ? [10.1, 10.2, 9.3, 9.4] : c);   // 收盘 9.4 < MA7
+    const { s, ind } = mk(cs, MA, EMA);
+    ok('★ 有一根收盘跌破 MA7 → 不成立', findTwoBearHold(s, ind, 3, 2) === null);
+  }
+  {
+    const cs = base.map((c, i) => i === 2 ? [10.1, 10.2, 9.5, 9.55] : c);  // > MA7 但 < EMA7
+    const { s, ind } = mk(cs, MA, EMA);
+    ok('★ 收盘站上 MA7 但跌破 EMA7 → 仍不成立', findTwoBearHold(s, ind, 3, 2) === null);
+  }
+  {
+    const { s, ind } = mk(base, MA, EMA);
+    ok('可配置阴K根数（要求 3 根时只有 2 根 → 不成立）',
+      findTwoBearHold(s, ind, 3, 2) !== null && findTwoBearHold(s, ind, 3, 3) === null,
+      'bars=2 成立 / bars=3 不成立');
+  }
+  {
+    const { s, ind } = mk(base, MA, EMA);
+    ok('K线不足时返回 null 而不是抛错', findTwoBearHold(s, ind, 1, 2) === null);
+  }
+
+  // —— 接线：形态开关确实切换了判定路径 ——
+  {
+    const on = { ...cfg, pullbackPattern: 'twoBearHold' };
+    const off = { ...cfg, pullbackPattern: 'touch' };
+    const series = buildLevels();
+    const viewsOf = c => {
+      const v = {};
+      for (const lv of LEVELS) v[lv.key] = analyzeLevel(series[lv.key], c, 'closed');
+      v.__symbol = 'TWOBEARUSDT';
+      return v;
+    };
+    const a = findResonance(viewsOf(off), off, 'closed');
+    ok('对照：旧形态（触及MA7+上穿）在其他条件满足时会触发',
+      a.matches.some(m => m.group === '3m>15m>2h'), `命中 ${a.matches.length} 组`);
+
+    const v = viewsOf(on);
+    let injected = 0;
+    for (const key of ['2m', '3m', '5m']) {
+      if (!v[key]) continue;
+      v[key].twoBear = { bars: 2, depth: 0.01, top: 1, low: 1 };
+      v[key].aboveBoth = true;
+      injected++;
+    }
+    const b = findResonance(v, on, 'closed');
+    ok('★ 新形态成立时（两根阴K不破均线 + 收盘站上两条均线）能触发',
+      b.matches.length > 0, `注入了 ${injected} 个基准级别，命中 ${b.matches.length} 组`);
+
+    const v2 = viewsOf(on);
+    for (const key of ['2m', '3m', '5m']) {
+      if (!v2[key]) continue;
+      v2[key].twoBear = { bars: 2 };
+      v2[key].aboveBoth = false;
+    }
+    ok('新形态要求「收盘同时站上两条均线」：置 false 后不再触发',
+      findResonance(v2, on, 'closed').matches.length === 0, '全部 aboveBoth=false → 0 组');
+  }
+
+  ok('默认使用「两根阴K不破均线」形态', DEFAULT_SIGNAL.pullbackPattern === 'twoBearHold',
+    `pullbackPattern=${DEFAULT_SIGNAL.pullbackPattern} bars=${DEFAULT_SIGNAL.pullbackBars}`);
+}
+
+/* ============ 13. 两阶段盯盘状态机（预备 → 触发） ============ */
+section('13. 两阶段盯盘状态机（大级别预备 → 最小级别首次站上触发）');
+{
+  const groups = [{ big: '1h', mid: '10m', base: '2m', inner: ['15m', '30m'], adjacent: '15m', enabled: true }];
+  const mkLog = () => ({ info() { }, warn() { }, error() { }, signal() { }, ok() { }, debug() { } });
+  const mk = (o = {}) => ({
+    '1h': { twoBear: !!o.big, holdMa: !!o.big, candleT: 1000 },
+    '10m': { strokeOk: !!o.midStroke, above7: !!o.adjCross },
+    '2m': { aboveBoth: !!o.above, belowBoth: !!o.below, close: 10, ma7: 9.9, ema7: 9.95, candleT: o.t ?? 2000 },
+    '15m': { strokeOk: !!o.inner15, above7: !!o.adjCross },
+    '30m': { strokeOk: !!o.inner30 },
+  });
+
+  {
+    const w = new Watcher(mkLog(), groups);
+    ok('大级别未满足形态 → 状态保持待机',
+      w.update('A', mk({ big: false })).length === 0 && w.snapshot(0).total === 0);
+  }
+  {
+    const w = new Watcher(mkLog(), groups);
+    const e = w.update('A', mk({ big: true }));
+    const s = w.snapshot(0);
+    ok('★ 阶段一：大级别满足 → 进入预备名单且不报警',
+      e.length === 0 && s.armed === 1 && s.fired === 0,
+      '预备 ' + s.armed + ' / 已触发 ' + s.fired);
+  }
+  {
+    const w = new Watcher(mkLog(), groups);
+    w.update('A', mk({ big: true }));
+    const e1 = w.update('A', mk({ big: true, above: true }));
+    ok('★ 最小级别没跌破就站上 → 不算触发（必须先破）', e1.length === 0);
+
+    w.update('A', mk({ big: true, below: true }));
+    const e2 = w.update('A', mk({ big: true, above: true }));
+    ok('★ 先跌破、再首次站上 → 触发报警', e2.length === 1, e2[0] ? e2[0].text.slice(0, 66) : '无');
+    ok('★ 报警文案包含大级别 / 最小级别 / 参考信息',
+      !!e2[0] && /1h/.test(e2[0].text) && /2m/.test(e2[0].text) && /够笔/.test(e2[0].text),
+      e2[0] ? e2[0].text : '无');
+  }
+  {
+    const w = new Watcher(mkLog(), groups);
+    w.update('A', mk({ big: true }));
+    w.update('A', mk({ big: true, below: true }));
+    const a1 = w.update('A', mk({ big: true, above: true, t: 3000 }));
+    const a2 = w.update('A', mk({ big: true, above: true, t: 4000 }));
+    const a3 = w.update('A', mk({ big: true, above: true, t: 4000 }));
+    ok('★ 同一周期内只报警一次（后续再站上不重复）',
+      a1.length === 1 && a2.length === 0 && a3.length === 0,
+      '首次 ' + a1.length + ' / 再站上 ' + a2.length);
+  }
+  {
+    const w = new Watcher(mkLog(), groups);
+    w.update('A', mk({ big: true }));
+    w.update('A', mk({ big: true, below: true }));
+    w.update('A', mk({ big: true, above: true, t: 3000 }));
+    const before = w.snapshot(0);
+    w.update('A', mk({ big: false }));
+    const after = w.snapshot(0);
+    w.update('A', mk({ big: true }));
+    const rearmed = w.snapshot(0);
+    ok('★ 大级别条件消失 → 周期结束并重置，可再次预备',
+      before.fired === 1 && after.total === 0 && rearmed.armed === 1,
+      '触发 ' + before.fired + ' → 重置 ' + after.total + ' → 重新预备 ' + rearmed.armed);
+  }
+  {
+    const w = new Watcher(mkLog(), groups);
+    w.update('A', mk({ big: true }));
+    w.update('A', mk({ big: true, below: true }));
+    const e = w.update('A', mk({ big: true, above: true, midStroke: false, inner15: false, inner30: false, adjCross: false }));
+    ok('★ 中间级别未够笔 / 临近级别未上穿 → 仍报警，但作为参考信息带出',
+      e.length === 1 && e[0].innerAllStroke === false && e[0].adjacentCross === false,
+      e[0] ? (e[0].mid + (e[0].midStroke ? '已' : '未') + '够笔，' + e[0].adjacent + (e[0].adjacentCross ? '已' : '未') + '上穿') : '无');
+  }
+  {
+    const w = new Watcher(mkLog(), groups);
+    w.setConfig({ watchEnabled: false });
+    ok('关闭盯盘开关后完全不工作',
+      w.update('A', mk({ big: true })).length === 0 && w.snapshot(0).total === 0);
+  }
+  {
+    const w = new Watcher(mkLog(), groups);
+    w.update('A', mk({ big: true }));
+    w.update('A', mk({ big: false }));
+    w.update('B', mk({ big: true }));
+    const s = w.snapshot(5);
+    ok('多个币种各自独立维护状态', s.total === 1 && s.rows[0].symbol === 'B', JSON.stringify(s.rows.map(r => r.symbol)));
+  }
+  ok('默认对应表就是用户确认的三组：2m→10m→1h / 3m→15m→2h / 5m→30m→3h',
+    DEFAULT_WATCH_GROUPS.length === 3
+    && DEFAULT_WATCH_GROUPS.every(g => g.enabled !== false)
+    && DEFAULT_WATCH_GROUPS[0].big === '1h' && DEFAULT_WATCH_GROUPS[0].mid === '10m' && DEFAULT_WATCH_GROUPS[0].base === '2m',
+    DEFAULT_WATCH_GROUPS.map(g => g.big + '→' + g.mid + '→' + g.base + (g.enabled === false ? '(关)' : '')).join(' '));
+}
+
+/* ============ 14. 独立形态提醒：双阴不破（多） / 双阳不穿（空） ============ */
+section('14. 独立形态提醒：双阴不破均线（多） / 双阳不穿破均线（空）');
+{
+  const mk = (candles, ma7, ema7) => ({
+    s: {
+      o: candles.map(c => c[0]), h: candles.map(c => c[1]),
+      l: candles.map(c => c[2]), c: candles.map(c => c[3]),
+    },
+    ind: { ma7: candles.map(() => ma7), ema7: candles.map(() => ema7) },
+  });
+  const MA = 9.5, EMA = 9.6;
+
+  /* ---- 双阳不穿（做空） ---- */
+  {
+    // [开, 高, 低, 收]；前两根收在均线下方
+    const cs = [
+      [10.0, 10.1, 9.4, 9.5],    // 0 参考
+      [9.30, 9.45, 9.20, 9.35],  // 1 阳K，收 9.35 < MA7/EMA7
+      [9.38, 9.52, 9.30, 9.42],  // 2 阳K，收 9.42 < MA7/EMA7（影线刺到 9.52）
+      [9.42, 9.50, 9.20, 9.25],  // 3 触发K
+    ];
+    const { s, ind } = mk(cs, MA, EMA);
+    const r = findTwoBullHold(s, ind, 3, 2);
+    ok('★ 双阳不穿：两根阳K收盘都没涨破 MA7/EMA7 → 成立',
+      !!r && r.bars === 2, r ? 'bars=' + r.bars + ' 幅度 ' + (r.depth * 100).toFixed(2) + '%' : 'null');
+  }
+  {
+    const cs = [
+      [10.0, 10.1, 9.4, 9.5],
+      [9.30, 9.45, 9.20, 9.35],
+      [9.38, 9.52, 9.30, 9.42],
+      [9.42, 9.50, 9.20, 9.25],
+    ];
+    // 影线刺破均线（最高 9.75 > MA 9.5）但收盘仍在下方 → 仍成立
+    cs[2] = [9.38, 9.75, 9.30, 9.42];
+    const { s, ind } = mk(cs, MA, EMA);
+    ok('★ 双阳：影线允许刺破均线（收盘不穿即可）',
+      findTwoBullHold(s, ind, 3, 2) !== null, '最高 9.75 > MA ' + MA);
+  }
+  {
+    const cs = [
+      [10.0, 10.1, 9.4, 9.5],
+      [9.30, 9.45, 9.20, 9.35],
+      [9.38, 9.52, 9.30, 9.42],
+      [9.42, 9.50, 9.20, 9.25],
+    ];
+    cs[2] = [9.60, 9.70, 9.55, 9.65];   // 收盘 9.65 > EMA7 9.6 → 涨破了
+    const { s, ind } = mk(cs, MA, EMA);
+    ok('★ 双阳：有一根收盘涨破 EMA7 → 不成立',
+      findTwoBullHold(s, ind, 3, 2) === null);
+  }
+  {
+    const cs = [
+      [10.0, 10.1, 9.4, 9.5],
+      [9.45, 9.40, 9.30, 9.35],   // 阴K（收 < 开）
+      [9.38, 9.52, 9.30, 9.42],
+      [9.42, 9.50, 9.20, 9.25],
+    ];
+    const { s, ind } = mk(cs, MA, EMA);
+    ok('★ 双阳：有一根不是阳K → 不成立',
+      findTwoBullHold(s, ind, 3, 2) === null);
+  }
+  {
+    const cs = [[10, 10.1, 9.4, 9.5], [9.30, 9.45, 9.20, 9.35]];
+    const { s, ind } = mk(cs, MA, EMA);
+    ok('双阳：K线不足时返回 null 而不是抛错', findTwoBullHold(s, ind, 1, 2) === null);
+  }
+  {
+    // 多空互斥：同一组K线不可能同时成立
+    const bearCs = [
+      [10.0, 10.8, 9.9, 10.6],
+      [10.6, 10.7, 10.2, 10.1],
+      [10.1, 10.2, 9.8, 10.0],
+      [10.0, 10.6, 9.95, 10.5],
+    ];
+    const { s, ind } = mk(bearCs, MA, EMA);
+    ok('★ 双阴与双阳互斥（同一组K线不会同时成立）',
+      findTwoBearHold(s, ind, 3, 2) !== null && findTwoBullHold(s, ind, 3, 2) === null);
+  }
+
+  /* ---- 配置与默认值 ---- */
+  ok('默认开启独立形态提醒，级别为 15m/30m/1h/2h/3h',
+    DEFAULT_SIGNAL.dualEnabled === true
+    && JSON.stringify(DEFAULT_SIGNAL.dualLevels) === JSON.stringify(['15m', '30m', '1h', '2h', '3h'])
+    && DEFAULT_SIGNAL.dualBars === 2,
+    'levels=' + (DEFAULT_SIGNAL.dualLevels || []).join(',') + ' bars=' + DEFAULT_SIGNAL.dualBars);
+
+  /* ---- 视图字段接线 ---- */
+  {
+    const series = buildLevels();
+    const cfgD = { ...cfg, dualEnabled: true, dualLevels: ['15m', '30m'], dualBars: 2 };
+    const views = {};
+    for (const lv of LEVELS) views[lv.key] = analyzeLevel(series[lv.key], cfgD, 'closed');
+    ok('级别视图带出双阴/双阳形态字段与K线时间',
+      views['15m'] && 'twoBearD' in views['15m'] && 'twoBullD' in views['15m'] && 'candleT' in views['15m'],
+      '15m: candleT=' + views['15m'].candleT);
+  }
+}
+
+/* ============ 15. 双阴/双阳判定修正：窗口右移 + 两条前置条件 ============ */
+section('15. 双阴/双阳判定修正（含刚收盘那根 + 均线方向 + 前置趋势）');
+{
+  const mk = (candles, maArr, emaArr) => ({
+    s: {
+      o: candles.map(c => c[0]), h: candles.map(c => c[1]),
+      l: candles.map(c => c[2]), c: candles.map(c => c[3]),
+    },
+    ind: { ma7: maArr, ema7: emaArr },
+  });
+
+  /* 7 根K线：[开,高,低,收]
+     0..3 在均线上方（前置趋势）
+     4    阳K（形态之前）
+     5    阴K ┐ 双阴
+     6    阴K ┘ ← idx = 6（刚收盘的那根） */
+  const rows = [
+    [10.20, 10.30, 10.10, 10.25],
+    [10.25, 10.35, 10.15, 10.30],
+    [10.30, 10.40, 10.20, 10.35],
+    [10.35, 10.45, 10.25, 10.40],
+    [10.40, 10.50, 10.30, 10.45],   // 4 阳K
+    [10.45, 10.50, 10.28, 10.38],   // 5 阴K，收 10.38
+    [10.38, 10.42, 10.24, 10.32],   // 6 阴K，收 10.32（最新收盘）
+  ];
+  const MA = new Array(7).fill(10.05);   // 全部收盘都在 MA7 上方
+  const EMA = new Array(7).fill(10.10);
+  const base = { ...cfg, dualEnabled: true, dualBars: 2, dualRequireMaSlope: false, dualPrevBars: 0 };
+
+  // —— 修正一：窗口含刚收盘的那根 ——
+  {
+    const { s, ind } = mk(rows, MA, EMA);
+    const off = { ...base, dualRequireMaSlope: false, dualPrevBars: 0 };
+    ok('★ 形态含「刚收盘的那根」K线（idx、idx-1）→ 成立',
+      dualPattern(s, ind, 6, off, 1) !== null,
+      'idx=6 检查第 5、6 根（收 10.38 / 10.32）');
+    // 若按旧口径（idx-1、idx-2 = 第 5、4 根），第 4 根是阳K → 不成立
+    ok('★ 旧口径（idx-1、idx-2）会漏掉：第 4 根是阳K，正好证明窗口确实右移了',
+      findTwoBearHold(s, ind, 6, 2, true) === null,
+      'findTwoBearHold(idx=6) 检查第 5、4 根 → null');
+  }
+
+  // —— 修正二：均线方向 ——
+  {
+    const up = MA.map((v, i) => 10.00 + i * 0.02);      // MA7 向上
+    const down = MA.map((v, i) => 10.30 - i * 0.02);    // MA7 向下
+    const { s } = mk(rows, MA, EMA);
+    const on = { ...base, dualRequireMaSlope: true, dualPrevBars: 0 };
+    ok('★ 双阴（做多）+ MA7 向上 → 成立', dualPattern(s, { ma7: up, ema7: EMA }, 6, on, 1) !== null);
+    ok('★ 双阴（做多）+ MA7 向下 → 被拦', dualPattern(s, { ma7: down, ema7: EMA }, 6, on, 1) === null);
+  }
+  {
+    // 双阳（做空）：K线收在均线下方
+    const bear = [
+      [9.80, 9.90, 9.70, 9.75],
+      [9.75, 9.85, 9.65, 9.70],
+      [9.70, 9.80, 9.60, 9.65],
+      [9.65, 9.75, 9.55, 9.60],
+      [9.60, 9.70, 9.50, 9.55],
+      [9.55, 9.68, 9.50, 9.62],   // 5 阳K
+      [9.62, 9.74, 9.55, 9.68],   // 6 阳K
+    ];
+    const { s } = mk(bear, MA, EMA);
+    const MAo = new Array(7).fill(9.95);
+    const up = MAo.map((v, i) => 9.90 + i * 0.02);
+    const down = MAo.map((v, i) => 10.20 - i * 0.02);
+    const on = { ...base, dualRequireMaSlope: true, dualPrevBars: 0 };
+    ok('★ 双阳（做空）+ MA7 向下 → 成立', dualPattern(s, { ma7: down, ema7: EMA }, 6, on, -1) !== null);
+    ok('★ 双阳（做空）+ MA7 向上 → 被拦', dualPattern(s, { ma7: up, ema7: EMA }, 6, on, -1) === null);
+  }
+
+  // —— 修正三：前置趋势 ——
+  {
+    const { s, ind } = mk(rows, MA, EMA);
+    const need2 = { ...base, dualRequireMaSlope: false, dualPrevBars: 2 };
+    ok('★ 前置趋势：之前 2 根都在 MA7 上方 → 成立',
+      dualPattern(s, ind, 6, need2, 1) !== null, '第 3、4 根收 10.35 / 10.45 > MA7 10.05');
+
+    // 把第 4 根压到均线下方 → 前置趋势不满足
+    const bad = rows.map((c, i) => i === 4 ? [10.40, 10.50, 9.90, 9.95] : c);
+    const { s: s2, ind: ind2 } = mk(bad, MA, EMA);
+    ok('★ 前置趋势：之前有一根在 MA7 下方 → 被拦',
+      dualPattern(s2, ind2, 6, need2, 1) === null, '第 4 根收 9.95 < MA7 10.05');
+
+    ok('前置趋势要求越多越严（prev=0 成立 → prev=3 也成立，因为前 3 根都在上方）',
+      dualPattern(s, ind, 6, { ...base, dualPrevBars: 0 }, 1) !== null
+      && dualPattern(s, ind, 6, { ...base, dualPrevBars: 3 }, 1) !== null);
+  }
+
+  // —— 默认值 ——
+  ok('默认开启两条前置条件（均线方向 + 前置 3 根）',
+    DEFAULT_SIGNAL.dualRequireMaSlope === true && DEFAULT_SIGNAL.dualPrevBars === 3,
+    'slope=' + DEFAULT_SIGNAL.dualRequireMaSlope + ' prev=' + DEFAULT_SIGNAL.dualPrevBars);
 }
 
 /* ============ 汇总 ============ */

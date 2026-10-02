@@ -161,6 +161,10 @@ async function handleRequest(req, res) {
     const d = engine.chart(sym, bars);
     return d ? json(res, d) : json(res, { error: 'not found' }, 404);
   }
+  if (url.pathname === '/api/watch') {
+    const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 60));
+    return json(res, engine.watchSnapshot(limit));
+  }
   if (url.pathname === '/api/alertchart') {
     const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 150));
     const limit = Math.max(1, Math.min(60, Number(url.searchParams.get('limit')) || 24));

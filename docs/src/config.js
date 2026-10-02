@@ -67,7 +67,29 @@ export const DEFAULT_GROUPS = [
 ];
 
 /** 信号引擎参数（前端可实时调） */
+/**
+ * 两阶段盯盘的级别对应表（可改）。
+ *   big  大级别：出现「连续 bigBars 根阴K收盘不破 MA7/EMA7」→ 进入预备名单
+ *   base 最小级别：跌破 MA7/EMA7 后**首次**收盘重新站上 → 报警
+ *   mid  次级别（参考：是否够笔）
+ *   inner 大级别内的中间级别（参考：是否够笔）
+ *   adjacent 临近级别（参考：是否上穿均线）
+ *
+ * 用户确认的对应表就是这三组（与信号引擎的 DEFAULT_GROUPS 同一套映射）：
+ *   2m → 10m → 1h      3m → 15m → 2h      5m → 30m → 3h
+ */
+export const DEFAULT_WATCH_GROUPS = [
+  { big: '1h', mid: '10m', base: '2m', inner: ['15m', '30m'], adjacent: '15m', enabled: true },
+  { big: '2h', mid: '15m', base: '3m', inner: ['30m', '1h'], adjacent: '30m', enabled: true },
+  { big: '3h', mid: '30m', base: '5m', inner: ['1h', '2h'], adjacent: '1h', enabled: true },
+];
+
 export const DEFAULT_SIGNAL = {
+  // ============ 三条通道总开关 ============
+  // signalEnabled：共振信号引擎（固定级别组合 + 回踩突破 MA7/EMA7 + 背驰/成笔链过滤）
+  // watchEnabled ：两阶段盯盘（大级别预备 → 最小级别首次站上）
+  // dualEnabled  ：双阴不破均线（多） / 双阳不穿破均线（空）★ 当前只跑这一条
+  signalEnabled: false,
   scanMode: 'groups',      // groups=只扫描下面配置的固定组合；auto=穷举（基准+下一档+任意更大级别）
   groups: DEFAULT_GROUPS,  // 固定组合列表
   minBullLevels: 3,        // 至少 N 个级别为多头排列（用户要求 ≥3）
@@ -85,6 +107,28 @@ export const DEFAULT_SIGNAL = {
   baseMinIdx: 2,           // auto 模式：允许作为"基准级别"的最小下标（2=3分钟）
   baseMaxIdx: 6,           // auto 模式：允许作为"基准级别"的最大下标（6=30分钟）
   minScore: 0,             // 低于此评分的信号不推送
+  // —— 回踩形态 ——
+  //   touch      = 最低价触及 MA7、收盘站住，之后发生「上穿 MA7」事件才触发（旧行为）
+  //   twoBearHold = 连续 N 根阴K下跌但收盘始终没跌破 MA7/EMA7（影线可插破），
+  //                 当前K线收盘同时站上两条均线即触发（跌无可跌）
+  pullbackPattern: 'twoBearHold',
+  pullbackBars: 2,         // twoBearHold 模式下要求几根阴K
+
+  // —— 两阶段盯盘（预备 → 触发）——
+  //   阶段一：大级别首次出现「连续 watchBigBars 根阴K收盘不破 MA7/EMA7」→ 进入预备名单
+  //   阶段二：最小级别先收盘跌破 MA7 与 EMA7，再首次收盘重新站上 → 报警
+  watchEnabled: false,
+  watchBigBars: 2,          // 大级别要求连续几根「收盘不破两条均线」（2~3）
+  watchRequireBear: true,   // 是否要求那几根是阴K
+  watchGroups: DEFAULT_WATCH_GROUPS,   // 级别对应表（见文件上方定义）
+
+  // —— 独立形态提醒：双阴不破均线（多） / 双阳不穿破均线（空）——
+  //   不依赖共振组合，也不依赖盯盘状态机；这几档级别上一出现形态、第二根K线一收盘就提醒。
+  dualEnabled: true,
+  dualLevels: ['15m', '30m', '1h', '2h', '3h'],
+  dualBars: 2,             // 连续几根（默认两根）
+  dualRequireMaSlope: true,// 均线方向：做多要求 MA7 向上，做空要求 MA7 向下
+  dualPrevBars: 3,         // 前置趋势：形态之前价格需已在均线同侧持续 N 根（0=不检查）
   // —— 缠论背驰过滤（排除「确认级别将要出现背驰笔」的信号） ——
   filterBeichi: true,      // 总开关
   beichiScope: 'mid',      // mid = 只查确认级别；mid+big = 连最大级别一起查
@@ -95,7 +139,6 @@ export const DEFAULT_SIGNAL = {
   requireStrokeChain: true,    // 基准 → 确认级别之间的所有级别，都必须被这波回调带动成笔
   chainRequireAboveMa: false,  // 附加：链上各级别同时站上 MA7（「5m 带动 15m 也站上均线」）
 };
-
 
 /**
  * 市场配置档：现货 与 U 本位永续合约是两套独立的接口与额度。

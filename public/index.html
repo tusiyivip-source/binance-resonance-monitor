@@ -251,10 +251,67 @@
       <div class="gnote">信号会先在聚合窗口内合并成一条再发 —— 钉钉机器人硬限 <b>20 条/分钟</b>（超限报 660026），
         逐条推送必然刷屏并撞限流。想临时静音，取消勾选顶部的「启用推送」即可。</div>
     </div>
+    <div class="groupbox">
+      <div class="gtitle">
+        <b>形态提醒（独立）</b>
+        <span class="gsub">双阴不破均线 / 双阳不穿破均线</span>
+        <label class="toggle" style="margin-left:auto"><input type="checkbox" id="c-dualEnabled"> 启用</label>
+      </div>
+      <div class="prow">
+        <label>连续K线根数 <input id="c-dualBars" type="number" min="1" max="5" step="1"></label>
+      </div>
+      <div class="gnote">
+        级别：<b>15分 / 30分 / 1时 / 2时 / 3时</b>，第二根K线<b>一收盘立刻提醒</b>，不等其他条件。<br>
+        <b style="color:#f6465d">双阴不破（多）</b>：连续两根<b>阴</b>K，收盘都没跌破 MA7 与 EMA7（影线可插破）—— 上涨途中浅回调、抛压枯竭。<br>
+        <b style="color:#0ecb81">双阳不穿（空）</b>：连续两根<b>阳</b>K，收盘都没涨破 MA7 与 EMA7（影线可刺破）—— 下跌途中浅反弹、买盘枯竭。<br>
+        这一组提醒<b>不依赖</b>共振组合，也<b>不依赖</b>下面的两阶段盯盘，是独立的形态信号。
+      </div>
+    </div>
+    <div class="groupbox">
+      <div class="gtitle">
+        <b>两阶段盯盘（预备 → 触发）</b>
+        <span class="gsub">大级别先预备，最小级别首次站上才报警</span>
+        <label class="toggle" style="margin-left:auto"><input type="checkbox" id="c-watchEnabled"> 启用</label>
+      </div>
+      <div class="prow">
+        <label>大级别阴K根数 <input id="c-watchBigBars" type="number" min="1" max="5" step="1"></label>
+        <label class="toggle"><input type="checkbox" id="c-watchRequireBear"> 要求是阴K</label>
+      </div>
+      <div class="gnote">
+        <b>阶段一</b>：大级别（1h / 2h / 3h / 4h）首次出现「连续 N 根阴K收盘不破 MA7/EMA7」→ 进入预备名单，此时不报警。<br>
+        <b>阶段二</b>：之后盯最小级别，先收盘<b>跌破</b> MA7 与 EMA7，再<b>首次</b>收盘重新站上两条线 → ★ 立即报警。<br>
+        次级别是否够笔、大级别内中间级别是否够笔、临近级别是否上穿 —— 都作为<b>参考信息</b>带在报警里，不拦截信号。<br>
+        级别对应表（用户确认）：<code>2m→10m→1h</code>、<code>3m→15m→2h</code>、<code>5m→30m→3h</code>。
+      </div>
+    </div>
     <label class="row"><span>多头排列最少级别数</span><input id="c-minBullLevels" type="number" min="2" max="14" step="1"></label>
-    <label class="row"><span>回踩回看K线数</span><input id="c-pullbackLookback" type="number" min="1" max="20" step="1"></label>
-    <label class="row"><span>回踩容差 (%)</span><input id="c-pullbackTolerance" type="number" min="0" max="2" step="0.05"></label>
-    <label class="row"><span>基准上穿回看K线数</span><input id="c-triggerLookback" type="number" min="1" max="10" step="1"></label>
+
+    <div class="groupbox">
+      <div class="gtitle">
+        <b>回踩形态</b>
+        <span class="gsub">基准级别的回踩长什么样才算数</span>
+      </div>
+      <div class="prow">
+        <label>判定方式
+          <select id="c-pullbackPattern">
+            <option value="twoBearHold">两根阴K不破均线（跌无可跌）</option>
+            <option value="touch">最低价触及 MA7 后上穿</option>
+          </select>
+        </label>
+        <label>阴K根数 <input id="c-pullbackBars" type="number" min="1" max="6" step="1"></label>
+      </div>
+      <div class="gnote">
+        <b>两根阴K不破均线</b>：连续 N 根K线都是阴线，且每根的<b>收盘价</b>都没有跌破 MA7、也没有跌破 EMA7
+        —— <b>影线允许插破</b>。随后当前K线<b>收盘同时站上 MA7 与 EMA7</b> 即触发。<br>
+        含义：上涨途中<b>极浅的回调</b>，连收盘都没能把价格压到均线下方，说明抛压枯竭（跌无可跌）。<br>
+        <span style="color:#f0b90b">注意</span>：这种形态下价格压根没离开均线上方，所以<b>不存在「上穿 MA7」事件</b>，
+        触发条件改用「收盘同时站上两条均线」。选另一种判定方式时行为与原来一致。
+      </div>
+    </div>
+
+    <label class="row"><span>回踩回看K线数<br><small style="color:#5b6f8c;font-size:10.5px">仅「触及MA7后上穿」形态使用</small></span><input id="c-pullbackLookback" type="number" min="1" max="20" step="1"></label>
+    <label class="row"><span>回踩容差 (%)<br><small style="color:#5b6f8c;font-size:10.5px">仅「触及MA7后上穿」形态使用</small></span><input id="c-pullbackTolerance" type="number" min="0" max="2" step="0.05"></label>
+    <label class="row"><span>基准上穿回看K线数<br><small style="color:#5b6f8c;font-size:10.5px">仅「触及MA7后上穿」形态使用</small></span><input id="c-triggerLookback" type="number" min="1" max="10" step="1"></label>
     <label class="row"><span>确认级别上穿回看K线数</span><input id="c-adjacentLookback" type="number" min="1" max="15" step="1"></label>
     <label class="row"><span>最大级别判定均线<br><small style="color:#5b6f8c;font-size:10.5px">实测此开关几乎不影响结果：命中的信号里最大级别价格同时站上两条线</small></span><select id="c-bigMa"><option value="ema7">EMA7（默认）</option><option value="ma7">MA7</option></select></label>
     <label class="row"><span>基准级别下限下标（auto 模式）</span><input id="c-baseMinIdx" type="number" min="0" max="14" step="1"></label>
