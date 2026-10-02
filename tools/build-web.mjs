@@ -25,6 +25,7 @@ const CORE = [
   'config.js', 'indicators.js', 'chan.js', 'series.js', 'signals.js',
   'rest.js', 'market.js', 'tickfeed.js', 'engine.js',
   'emitter.js', 'logger.js', 'tracker.js', 'push-meta.js',
+  'watch.js',
 ];
 const BROWSER = ['boot.js'];
 const PUBLIC_FILES = ['app.js', 'chart.js', 'style.css'];
@@ -45,6 +46,30 @@ if (offenders.length) {
   process.exit(1);
 }
 console.log(`✓ 依赖检查通过：${CORE.length + BROWSER.length} 个模块均无 node: 内置依赖`);
+
+/* ---------------- 1b) 硬检查：相对导入的模块必须都在下发清单里 ----------------
+ * 只查「有没有 node: 依赖」是不够的 —— 新增一个模块（如 watch.js）而忘记加进 CORE，
+ * 线上会因为模块解析失败而整个应用打不开，本地却完全看不出来。
+ * 这里把每个下发模块的相对 import 解析出来，逐个确认它确实会被一起下发。 */
+{
+  const shipped = new Set([...CORE, ...BROWSER.map(x => 'browser/' + x)].map(x => 'src/' + x.replace(/\\/g, '/')));
+  const missing = [];
+  const importRe = /(?:^|\n)\s*(?:import|export)[^\n]*?from\s+['"](\.[^'"]+)['"]/g;
+  for (const rel of [...CORE.map(x => 'src/' + x), ...BROWSER.map(x => 'src/browser/' + x)]) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    let m;
+    while ((m = importRe.exec(src)) !== null) {
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(rel), m[1]));
+      if (!shipped.has(resolved)) missing.push(rel + '  →  ' + m[1] + '  (解析为 ' + resolved + ')');
+    }
+  }
+  if (missing.length) {
+    console.log('✗ 以下模块引用了没有一起下发的文件，线上会直接打不开：');
+    for (const x of [...new Set(missing)]) console.log('    ' + x);
+    process.exit(1);
+  }
+  console.log(`✓ 引用完整性通过：${shipped.size} 个模块的相对导入全部在清单内`);
+}
 
 /* ---------------- 2) 只清理自己拥有的产物 ---------------- */
 fs.mkdirSync(OUT, { recursive: true });
