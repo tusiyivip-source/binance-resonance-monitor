@@ -147,6 +147,13 @@ export class Engine extends Emitter {
       for (const [lv, d] of Object.entries(res.dual)) {
         const dir = d.bear ? 'long' : (d.bull ? 'short' : null);
         if (!dir) continue;
+        // —— 成交额门槛：24H 成交额低于阈值直接不提醒 ——
+        // 小成交额的币容易凑出「两根K线勉强不破均线」的假形态，且滑点大不好成交。
+        const minQv = this.cfg.dualMinQuoteVolume ?? 0;
+        if (minQv > 0 && !(Number(st.quoteVolume) >= minQv)) {
+          this.dualSkippedQv = (this.dualSkippedQv || 0) + 1;
+          continue;
+        }
         const key = 'dual|' + st.symbol + '|' + lv + '|' + d.candleT;
         if (this.dualSeen.has(key)) continue;
         this.dualSeen.set(key, Date.now());
@@ -445,8 +452,9 @@ export class Engine extends Emitter {
       beichiBlocked: this.beichiBlocked,
       watch: this.watcher.snapshot(0),
       watchDbg: this.watchDbg,
-      dual: { ...this.dualCount, seen: this.dualSeen.size, cfg: {
+      dual: { ...this.dualCount, seen: this.dualSeen.size, skippedByVolume: this.dualSkippedQv || 0, cfg: {
         enabled: this.cfg.dualEnabled, levels: this.cfg.dualLevels, bars: this.cfg.dualBars,
+        minQuoteVolume: this.cfg.dualMinQuoteVolume,
       } },
       watchArmed: this.watcher.stats.armed,
       watchFired: this.watcher.stats.fired,

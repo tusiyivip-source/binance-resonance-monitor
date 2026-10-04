@@ -171,7 +171,14 @@ export function analyzeLevel(series, cfg, mode) {
   const n = series.t.length;
   if (n < 40) return null;
   const ind = series.ensure();
-  const ci = series.done[n - 1] ? n - 1 : n - 2;
+  // —— 收盘判定用【时间戳】，不依赖 REST 回报的 done 标记 ——
+  //    tick-rest 模式下 done 要等滚动补K线拉回来才知道，而高等级别（1时/2时/3时）的
+  //    补K线周期很长，导致 K线早已收盘却迟迟不判定、报警被拖到几十分钟后。
+  //    实测：15分级别 412ms，而 30分/1时 最慢 1200 秒（20 分钟）。
+  //    其实收盘时刻看时钟就知道（1时K线就是整点收盘），根本不用问币安。
+  const nowMs = Date.now();
+  let ci = n - 1;
+  while (ci > 0 && nowMs < series.t[ci] + series.ms) ci--;
   const idx = mode === 'live' ? n - 1 : ci;
   if (idx < 30 || ci < 25) return null;
 

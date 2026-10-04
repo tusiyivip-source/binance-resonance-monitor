@@ -123,18 +123,33 @@ function connect() {
   });
   sse.addEventListener('alert', e => {
     const a = JSON.parse(e.data);
+
+    // ⚠ 顺序很关键：**先通知，再渲染**，且两者各自 try/catch。
+    //   原来是先 renderAlerts() 再弹窗 —— 渲染一旦抛异常（比如某个报警类型字段不全），
+    //   弹窗和鸣笛就永远不会执行，用户表现为「信号不弹了」，非常难查。
+    //   通知路径不能依赖渲染路径。
+    if (!a.initial) {
+      try {
+        beep(a.confirmed ? 'confirmed' : 'preview');
+      } catch (err) { console.warn('[alert] 鸣笛失败', err); }
+      try {
+        const isDual = a.kind === 'dual';
+        const tag = isDual
+          ? (a.side === 'long' ? '🔴 双阴不破 · 看多' : '🟢 双阳不穿 · 看空')
+          : (a.confirmed ? '✅ 共振确认' : '⚡ 共振预警');
+        const tail = isDual ? '' : ` · ${a.score}分`;
+        toast(`<b>${base(a.symbol)}</b> ${a.levelLabel ? '· ' + a.levelLabel : ''} · ${tag}${tail}<br>
+               <span style="color:#8ba0bd;font-size:11.5px">${a.text}</span>`);
+        if (notifyOn && 'Notification' in window && Notification.permission === 'granted') {
+          new Notification(`${a.symbol} ${tag.replace(/[🔴🟢✅⚡]\s*/g, '')}`,
+            { body: a.text, tag: a.symbol + (a.level || a.base) + a.candleT });
+        }
+      } catch (err) { console.warn('[alert] 弹窗失败', err); }
+    }
+
     alerts.unshift(a);
     if (alerts.length > 300) alerts.pop();
-    renderAlerts();
-    // 启动存量扫描只入面板，不鸣笛不弹窗，避免一次性轰炸
-    if (a.initial) return;
-    beep(a.confirmed ? 'confirmed' : 'preview');
-    toast(`<b>${base(a.symbol)}</b> · ${a.confirmed ? '✅ 已确认' : '⚡ 预警'} · ${a.score}分<br>
-           <span style="color:#8ba0bd;font-size:11.5px">${a.text}</span>`);
-    if (notifyOn && 'Notification' in window && Notification.permission === 'granted') {
-      new Notification(`${a.symbol} ${a.confirmed ? '共振确认' : '共振预警'}`,
-        { body: a.text, tag: a.symbol + a.base + a.candleT });
-    }
+    try { renderAlerts(); } catch (err) { console.warn('[alert] 面板渲染失败', err); }
   });
 }
 function setWs(kind, text) {
@@ -721,7 +736,7 @@ const CFG_FIELDS = [
   ['requireStrokeChain', 'bool'], ['chainRequireAboveMa', 'bool'],
   ['pullbackPattern', 'str'], ['pullbackBars', 'int'],
   ['watchEnabled', 'bool'], ['watchBigBars', 'int'], ['watchRequireBear', 'bool'],
-  ['dualEnabled', 'bool'], ['dualBars', 'int'],
+  ['dualEnabled', 'bool'], ['dualBars', 'int'], ['dualMinQuoteVolume', 'num'],
   ['signalEnabled', 'bool'],
 ];
 const CFG_DEFAULTS = {
@@ -733,7 +748,7 @@ const CFG_DEFAULTS = {
   requireStrokeChain: true, chainRequireAboveMa: false,
   pullbackPattern: 'twoBearHold', pullbackBars: 2,
   watchEnabled: true, watchBigBars: 2, watchRequireBear: true,
-  dualEnabled: true, dualBars: 2, signalEnabled: false,
+  dualEnabled: true, dualBars: 2, dualMinQuoteVolume: 4000000, signalEnabled: false,
 };
 
 let CFG_SNAPSHOT = {};

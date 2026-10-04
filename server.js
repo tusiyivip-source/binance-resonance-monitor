@@ -14,6 +14,7 @@ import { Tracker } from './src/tracker.js';
 import { fileStorage } from './src/file-storage.js';
 import { Pusher, CHANNEL_META, DEFAULT_PUSH } from './src/push.js';
 import { createLogger } from './src/logger.js';
+import { readCache, writeCache } from './src/kline-cache.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -235,13 +236,43 @@ async function main() {
     log.ok(`面板已就绪 → http://${APP.host}:${APP.port}`);
   });
 
+  // K线缓存的文件读写留在 Node 侧（market.js 是两端共用的，不能碰 node:fs）。
+  // 清单拉回来之后才能读缓存 —— 缓存是往 market.symbols 里填K线的。
+  const cacheFile = APP.cacheFile || 'data/klines-cache.json';
+  market.onCacheReady = () => {
+    const raw = readCache(cacheFile, log);
+    if (raw) market.applyCache(raw);
+  };
+  const saveCacheNow = () => {
+    const r = writeCache(cacheFile, market.collectCache(), log);
+    if (r) log.info(`K线缓存已写入：${r.symbols} 个标的 / ${(r.bytes / 1048576).toFixed(1)} MB`);
+    return r;
+  };
+
+  // 被限流时的等待要有可见输出，否则启动阶段静默挂住，日志停在「面板已就绪」像死了一样
+  rest.onBanWait = secs => log.warn(`被币安限流（418），等待 ${secs} 秒后重试 —— 这是正常退避，服务没有卡死`);
+  // 地域封锁与频率无关：换域名没用，只能换网络出口。必须明确告知，别让人误以为是网络抖动
+  rest.onGeoBlock = (status, host) => log.error(
+    `币安返回 HTTP ${status}（地域限制：${host}）—— 这是按 IP/地区封锁，与请求频率无关。\n` +
+    '  · 合约只有 fapi.binance.com 一个域名，切换域名无效\n' +
+    '  · 唯一解决办法是更换网络出口（挂代理 / 换网络 / 换 IP）\n' +
+    '  · WebSocket（bookTicker）通常不受影响，所以会出现「价格在动但拉不到K线」的现象\n' +
+    '  · 在线版不受此影响：https://tusiyivip-source.github.io/binance-resonance-monitor/',
+  );
+
   try {
-    await market.init();
+    await market.init();          // 只做不依赖网络的部分：起行情流 + 读磁盘缓存
   } catch (e) {
     log.error('初始化失败：' + (e.stack || e.message));
   }
   engine.start();
   log.ok(`引擎已启动，评估 ${market.symbols.size} 个标的 × ${LEVELS.length} 个级别`);
+
+  // 拉清单/播种放到后台：限流时可能被退避拖住几分钟，
+  // 绝不能让它阻塞引擎启动和下面的定时器注册（否则服务看起来就是死了）。
+  market.bootstrap()
+    .then(() => log.ok(`初始清单就绪，播种 ${market.symbols.size} 个标的`))
+    .catch(e => log.warn('初始清单获取失败（60 秒后自动重试）：' + e.message));
 
   setInterval(() => market.refreshUniverse().catch(e => log.warn(e.message)), APP.tickerRefreshMs);
   setInterval(() => market.refreshExchangeInfo().catch(() => {}), APP.exchangeInfoRefreshMs);
@@ -251,6 +282,14 @@ async function main() {
     market.resyncAll().catch(e => log.warn(e.message));
   }, APP.resyncMs);
   setInterval(() => { try { tracker.resolve(market); } catch (e) { log.warn('绩效结算失败：' + e.message); } }, 30_000);
+
+  // 定期把K线写盘：重启时可直接恢复、跳过全量重播。
+  // 否则每次重启都重发 200×12 = 2400 个请求（4800 权重），必撞 418，
+  // 而 418 期间播种又必然失败 —— 服务会卡在「有标的名、无K线」出不来。
+  setInterval(() => { try { saveCacheNow(); } catch (e) { log.warn('缓存写入失败：' + e.message); } }, APP.cacheSaveMs);
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => { try { saveCacheNow(); } catch { /* 退出时尽力而为 */ } process.exit(0); });
+  }
 
   setInterval(() => {
     const s = market.stats;

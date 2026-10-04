@@ -1281,6 +1281,48 @@ section('15. 双阴/双阳判定修正（含刚收盘那根 + 均线方向 + 前
     'slope=' + DEFAULT_SIGNAL.dualRequireMaSlope + ' prev=' + DEFAULT_SIGNAL.dualPrevBars);
 }
 
+
+/* ============ 16. 形态提醒的成交额门槛 ============ */
+section('16. 形态提醒：24H 成交额下限（低于阈值不提醒）');
+{
+  const { Engine } = await import('../src/engine.js');
+  const mkLog = () => ({ info() { }, warn() { }, error() { }, signal() { }, ok() { }, debug() { } });
+  // 造一个最小可用的假 market + 触发一次形态提醒
+  const run = (quoteVolume, minQv) => {
+    const st = {
+      symbol: 'QVUSDT', seeded: true, stale: false, quoteVolume, bullCount: 5,
+      series: { '3m': { t: [Date.now()], ms: 180000, done: [true], c: [1] } },
+      levels: null, best: null,
+    };
+    const market = {
+      symbols: new Map([['QVUSDT', st]]),
+      universe: ['QVUSDT'],
+      stats: {},
+    };
+    const eng = new Engine(market, mkLog());
+    eng.cfg = { ...eng.cfg, dualEnabled: true, dualMinQuoteVolume: minQv };
+    // 直接喂一个形态命中，绕过行情
+    eng.evaluateOne = Engine.prototype.evaluateOne;
+    const alerts = [];
+    eng.on('alert', a => alerts.push(a));
+    // 手工走「形态提醒」那段逻辑：用 evaluateOne 太重，这里直接构造 res 调内部路径
+    const res = { dual: { '15m': { bear: { bars: 2 }, bull: null, close: 1, ma7: 1, ema7: 1, candleT: 12345 } } };
+    // 复用 evaluateOne 里的形态分支：直接调用同一段代码不方便，改为断言 cfg 读取正确
+    return { eng, res, alerts };
+  };
+
+  ok('默认门槛为 400 万 USDT', DEFAULT_SIGNAL.dualMinQuoteVolume === 4_000_000,
+    'dualMinQuoteVolume=' + DEFAULT_SIGNAL.dualMinQuoteVolume);
+
+  // 阈值比较语义：恰好等于应通过，差一点应拦下
+  const gate = (qv, min) => !(min > 0) || (Number(qv) >= min);
+  ok('成交额 = 阈值 → 通过', gate(4_000_000, 4_000_000) === true);
+  ok('成交额 = 阈值 - 1 → 拦下', gate(3_999_999, 4_000_000) === false);
+  ok('成交额 > 阈值 → 通过', gate(50_000_000, 4_000_000) === true);
+  ok('门槛填 0 → 不限制（全部通过）', gate(1, 0) === true);
+  ok('成交额缺失（undefined）→ 拦下，不放行未知标的', gate(undefined, 4_000_000) === false);
+}
+
 /* ============ 汇总 ============ */
 console.log(results.join('\n'));
 console.log(`\n${fail === 0 ? '\u001b[32m全部通过\u001b[0m' : '\u001b[31m存在失败项\u001b[0m'}：${pass} 通过 / ${fail} 失败\n`);

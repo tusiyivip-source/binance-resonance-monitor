@@ -87,8 +87,31 @@ export class RestClient {
     const timeout = opts.timeout ?? 15_000;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      // —— 被限流时要**真的等满**，不能每 5 秒试探一次 ——
+      // 币安的 418 惩罚是「持续触碰就持续累加」，每 5 秒重试会让 retry-after 一直续期、
+      // 永远解不开（实测：等了半小时仍是 418，retry-after 反复刷新）。
+      // 这里睡满剩余封禁时间（单次上限 5 分钟，避免超长封禁把任务挂死），
+      // 且这次等待**不计入重试次数**。
       const waitBan = this.bannedUntil - Date.now();
-      if (waitBan > 0) await sleep(Math.min(waitBan, 5000));
+      if (waitBan > 0) {
+        // 封禁等待期间必须有可见输出：否则服务在启动阶段会静默挂住好几分钟，
+        // 日志停在「面板已就绪」，看起来像死了。
+        const secs = Math.round(waitBan / 1000);
+        if (!this._banNotifiedAt || Date.now() - this._banNotifiedAt > 30_000) {
+          this._banNotifiedAt = Date.now();
+          this.onBanWait?.(secs, path);
+        }
+        await sleep(Math.min(waitBan, 300_000));
+        attempt--;
+        continue;
+      }
+      // 地域封锁期间不要刷请求（451 与频率无关，重试只是浪费）
+      const waitGeo = (this.geoBlockedUntil ?? 0) - Date.now();
+      if (waitGeo > 0) {
+        await sleep(Math.min(waitGeo, 300_000));
+        attempt--;
+        continue;
+      }
 
       await this.bucket.take(weight);
       await this._acquireSlot();
@@ -120,9 +143,20 @@ export class RestClient {
           throw new Error(`HTTP ${res.status} rate limited`);
         }
         if (res.status === 451 || res.status === 403) {
-          this.rotateHost();
-          if (attempt < retries) continue;
-          throw new Error(`HTTP ${res.status} 地域限制`);
+          // —— 地域限制（451 Unavailable For Legal Reasons / 403）——
+          // 这是币安按 **IP / 地区** 做的封锁，跟请求频率无关：
+          //   · 换域名没用（合约只有 fapi.binance.com 一个域名，rotateHost 是空转）
+          //   · 立刻重试更没用，只会白白刷请求
+          // 所以：记一个冷却窗口（至少 5 分钟不再试），并明确告知调用方需要换网络出口。
+          const retryAfter = Number(res.headers.get('retry-after') || 0);
+          this.stats.errors++;
+          this.geoBlockedUntil = Date.now() + Math.max(retryAfter * 1000, 300_000);
+          if (!this._geoNotifiedAt || Date.now() - this._geoNotifiedAt > 300_000) {
+            this._geoNotifiedAt = Date.now();
+            this.onGeoBlock?.(res.status, this.base);
+          }
+          if (APP.baseUrls.length > 1 && attempt < retries) { this.rotateHost(); continue; }
+          throw new Error(`HTTP ${res.status} 地域限制（币安按 IP/地区封锁，换域名无效，需更换网络出口）`);
         }
         if (!res.ok) {
           if (res.status >= 500 && attempt < retries) { await sleep(300 * (attempt + 1)); continue; }

@@ -259,12 +259,15 @@
       </div>
       <div class="prow">
         <label>连续K线根数 <input id="c-dualBars" type="number" min="1" max="5" step="1"></label>
+        <label>24H成交额下限 (USDT) <input id="c-dualMinQuoteVolume" type="number" min="0" step="100000"></label>
       </div>
       <div class="gnote">
         级别：<b>15分 / 30分 / 1时 / 2时 / 3时</b>，第二根K线<b>一收盘立刻提醒</b>，不等其他条件。<br>
         <b style="color:#f6465d">双阴不破（多）</b>：连续两根<b>阴</b>K，收盘都没跌破 MA7 与 EMA7（影线可插破）—— 上涨途中浅回调、抛压枯竭。<br>
         <b style="color:#0ecb81">双阳不穿（空）</b>：连续两根<b>阳</b>K，收盘都没涨破 MA7 与 EMA7（影线可刺破）—— 下跌途中浅反弹、买盘枯竭。<br>
-        这一组提醒<b>不依赖</b>共振组合，也<b>不依赖</b>下面的两阶段盯盘，是独立的形态信号。
+        这一组提醒<b>不依赖</b>共振组合，也<b>不依赖</b>下面的两阶段盯盘，是独立的形态信号。<br>
+        <b>成交额下限</b>：24H 成交额低于此值<b>不提醒</b>（默认 400 万 USDT）——
+        小成交额的币容易凑出假形态，且滑点大不好成交。填 0 表示不限制。
       </div>
     </div>
     <div class="groupbox">

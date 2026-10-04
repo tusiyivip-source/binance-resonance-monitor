@@ -129,6 +129,9 @@ export const DEFAULT_SIGNAL = {
   dualBars: 2,             // 连续几根（默认两根）
   dualRequireMaSlope: true,// 均线方向：做多要求 MA7 向上，做空要求 MA7 向下
   dualPrevBars: 3,         // 前置趋势：形态之前价格需已在均线同侧持续 N 根（0=不检查）
+  // 成交额门槛：24H 成交额低于此值不提醒（单位 USDT）。
+  // 小成交额的币容易凑出「两根K线勉强不破均线」的假形态，而且滑点大、实际不好成交。
+  dualMinQuoteVolume: 4_000_000,   // 400 万 USDT
   // —— 缠论背驰过滤（排除「确认级别将要出现背驰笔」的信号） ——
   filterBeichi: true,      // 总开关
   beichiScope: 'mid',      // mid = 只查确认级别；mid+big = 连最大级别一起查
@@ -176,7 +179,7 @@ export const MARKET_PROFILES = {
     exchangeInfoPath: '/fapi/v1/exchangeInfo',
     tickerWeight: 40,
     officialWeightCap: 2400,
-    weightPerMinute: 1900,       // 合约 IP 额度只有 2400/分钟，留足余量
+    weightPerMinute: 1100,       // 合约硬上限 2400/分钟；1100+200 突发 = 1300，留足余量给榜单与滚动补K线
     wsKlineStreams: false,       // 实测：kline WS 被拦截，改用 bookTicker
     bookTickerStream: '!bookTicker',
     universeFilter: s => s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT' && s.status === 'TRADING',
@@ -208,10 +211,20 @@ export const APP = {
   tickerRefreshMs: 60_000,   // 涨幅榜刷新
   exchangeInfoRefreshMs: 30 * 60_000,
   resyncMs: 15 * 60_000,     // 全量对账，修复丢包
-  broadcastMs: 1000,         // 前端表格推送频率
+  broadcastMs: 1000,
+  cacheSaveMs: 300_000,       // K线缓存写盘间隔（5 分钟）
+  cacheFile: 'data/klines-cache.json',         // 前端表格推送频率
   weightPerMinute: PROFILE.weightPerMinute,
-  weightBurst: 600,
-  concurrency: 12,           // REST 并发
+  /**
+   * 按币安规则留足余量：
+   *   合约硬上限 2400 权重/分钟（响应头 x-mbx-used-weight-1m 可查）。
+   *   旧设置 1900 + 突发 600 = 2500 > 2400 —— **突发打满时会直接越过官方上限**，
+   *   这就是「配额看起来没满却还是被 418」的原因。
+   *   现在 1100 + 200 = 1300，留 1100 给涨幅榜（权重 40/60秒）、滚动补K线与重试。
+   *   代价：全量播种（4800 权重）从 2.5 分钟变成约 4.4 分钟，但不会再撞限流。
+   */
+  weightBurst: 200,
+  concurrency: 8,            // REST 并发（配合上面的预算，降低瞬时压力）
   maxCandlesKept: 320,       // 每个级别序列保留的K线数（MA99 需 99 根 + 回看 20 根，留足余量）
   minQuoteVolume: 0,         // 0 = 严格按涨幅榜取前200，不做流动性过滤
   minTrades24h: 50,          // 死盘保险丝：24h 成交笔数低于此值的对子剔除（避免僵尸币污染榜单）

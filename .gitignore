@@ -30,3 +30,7 @@ docs/img/web-mode.png
 # 校验脚本产生的截图（体积大，不入库）
 docs/img/alerts-dual.png
 docs/img/alerts-chart.png
+
+# K线磁盘缓存（体积大，重启时自动重建）
+data/klines-cache.json
+data/klines-cache.json.tmp
