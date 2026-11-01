@@ -42,9 +42,11 @@ export class Tracker {
     }
   }
 
-  /** 记录一条报警（同一 symbol+base+candleT 只记一次） */
+  /** Keep signal type, direction and pair in the identity and persisted record. */
   record(alert) {
-    const key = `${alert.symbol}|${alert.base}|${alert.candleT}|${alert.mode}`;
+    const kind = alert.kind ?? 'resonance';
+    const side = ['long', 'short'].includes(alert.side) ? alert.side : ['resonance', 'watch'].includes(kind) ? 'long' : null;
+    const key = JSON.stringify([alert.symbol, kind, side, alert.pair, alert.level, alert.base, alert.mid, alert.big, alert.candleT, alert.mode]);
     if (this.entries.some(e => e.key === key)) return null;
     const e = {
       id: ++this.seq,
@@ -53,11 +55,14 @@ export class Tracker {
       ts: alert.ts ?? Date.now(),
       candleT: alert.candleT,
       price: alert.price,
-      score: alert.score,
+      kind, side, pair: alert.pair ?? null, sub: alert.sub ?? null, main: alert.main ?? null,
+      level: alert.level ?? null,
+      score: kind === 'resonance' && Number.isFinite(alert.score) ? alert.score : null,
       base: alert.base, mid: alert.mid, big: alert.big,
       bullCount: alert.bullCount,
       confirmed: !!alert.confirmed,
       initial: !!alert.initial,
+      returnVersion: 2,
       out: {},
     };
     this.entries.push(e);
@@ -70,12 +75,14 @@ export class Tracker {
     return e;
   }
 
-  /** 在某个级别序列上取"该时刻之后第一根收盘价" */
+  /** Latest closed price at or before target, without carrying stale prices across a gap. */
   static priceAt(series, target) {
     if (!series) return null;
     const t = series.t, ms = series.ms, c = series.c;
     for (let i = t.length - 1; i >= 0; i--) {
-      if (t[i] + ms <= target) return c[i];
+      if (t[i] + ms <= target) {
+        return target - (t[i] + ms) < ms && series.done?.[i] !== false ? c[i] : null;
+      }
     }
     return null;
   }
@@ -87,6 +94,8 @@ export class Tracker {
     this.lastResolve = now;
     let changed = 0;
     for (const e of this.entries) {
+      // Old records did not save direction. Preserve them, without inventing long/short returns.
+      if (!['long', 'short'].includes(e.side) || !(e.price > 0)) continue;
       const st = market.symbols.get(e.symbol);
       if (!st || !st.seeded) continue;
       for (const h of HORIZONS) {
@@ -99,7 +108,7 @@ export class Tracker {
           if (px != null) break;
         }
         if (px == null) continue;
-        e.out[h.key] = Math.round(((px - e.price) / e.price) * 10000) / 100;
+        e.out[h.key] = Math.round(((px - e.price) / e.price) * (e.side === 'short' ? -1 : 1) * 10000) / 100;
         e.out._px = e.out._px || {};
         e.out._px[h.key] = px;
         changed++;
@@ -116,26 +125,28 @@ export class Tracker {
   }
 
   stats() {
-    const use = this.entries.filter(e => !e.initial);
+    const recorded = this.entries.filter(e => !e.initial);
+    const use = recorded.filter(e => e.returnVersion === 2 && ['long', 'short'].includes(e.side));
     const agg = arr => {
       const v = arr.filter(x => Number.isFinite(x));
-      if (!v.length) return { n: 0, avg: null, med: null, win: null, best: null, worst: null, total: 0 };
+      if (!v.length) return { n: 0, avg: null, med: null, win: null, best: null, worst: null, total: arr.length };
       const s = [...v].sort((a, b) => a - b);
       return {
         n: v.length,
         total: arr.length,
         avg: Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 100) / 100,
-        med: s[(s.length - 1) >> 1],
+        med: (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2,
         win: Math.round((v.filter(x => x > 0).length / v.length) * 1000) / 10,
         best: s[s.length - 1],
         worst: s[0],
       };
     };
     const buckets = [
-      ['≥80分', e => e.score >= 80],
-      ['70–79分', e => e.score >= 70 && e.score < 80],
-      ['60–69分', e => e.score >= 60 && e.score < 70],
-      ['<60分', e => e.score < 60],
+      ['≥80分', e => Number.isFinite(e.score) && e.score >= 80],
+      ['70–79分', e => Number.isFinite(e.score) && e.score >= 70 && e.score < 80],
+      ['60–69分', e => Number.isFinite(e.score) && e.score >= 60 && e.score < 70],
+      ['<60分', e => Number.isFinite(e.score) && e.score < 60],
+      ['未评分', e => !Number.isFinite(e.score)],
     ];
     const byScore = buckets.map(([name, f]) => {
       const sub = use.filter(f);
@@ -144,7 +155,8 @@ export class Tracker {
     return {
       total: this.entries.length,
       tracked: use.length,
-      initialExcluded: this.entries.length - use.length,
+      initialExcluded: this.entries.length - recorded.length,
+      legacyExcluded: recorded.length - use.length,
       confirmed: use.filter(e => e.confirmed).length,
       preview: use.filter(e => !e.confirmed).length,
       horizons: HORIZONS.map(h => ({ key: h.key, hours: h.hours, ...agg(use.map(e => e.out[h.key])) })),
@@ -154,8 +166,11 @@ export class Tracker {
         h4: agg(use.filter(e => e.confirmed).map(e => e.out.h4)),
         h24: agg(use.filter(e => e.confirmed).map(e => e.out.h24)),
       },
-      recent: use.slice(-40).reverse().map(e => ({
+      recent: recorded.slice(-40).reverse().map(e => ({
         symbol: e.symbol, ts: e.ts, score: e.score, base: e.base, mid: e.mid, big: e.big,
+        kind: e.kind ?? 'legacy', side: e.side ?? null, pair: e.pair ?? null,
+        sub: e.sub ?? null, main: e.main ?? null, level: e.level ?? null,
+        legacy: e.returnVersion !== 2,
         confirmed: e.confirmed, price: e.price, out: e.out,
       })),
     };

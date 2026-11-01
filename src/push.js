@@ -24,6 +24,36 @@ import { DINGTALK_URL, CHANNEL_META, DEFAULT_PUSH } from './push-meta.js';
 /** 允许用环境变量把推送指向自建/代理地址（也便于测试时指向 Mock 服务） */
 const dingtalkUrl = () => process.env.DINGTALK_URL || DINGTALK_URL;
 
+/**
+ * 把用户填的「Access Token」归一化成纯 token。
+ *
+ * 为什么需要：钉钉群机器人页面上给的是一条完整 Webhook 地址
+ *   https://oapi.dingtalk.com/robot/send?access_token=<64位十六进制>
+ * 而配置项要的只是最后那串 token。用户十有八九会把整条地址粘进来，
+ * 拼出来的 URL 就变成 `...?access_token=https%3A%2F%2F...`，
+ * 钉钉返回 **errcode=300005 token is not exist** —— 看起来像"token 失效"，
+ * 实际只是多粘了一段。这里把常见粘法都兼容掉。
+ */
+export function normalizeDingtalkToken(raw) {
+  let s = String(raw ?? '').trim().replace(/\s+/g, '');
+  if (!s) return '';
+  // 1) 粘了整条 Webhook 地址
+  if (/^https?:/i.test(s)) {
+    try { s = new URL(s).searchParams.get('access_token') || s; }
+    catch { const m = s.match(/access_token=([^&]+)/i); s = m ? decodeURIComponent(m[1]) : s; }
+  }
+  // 2) 粘了 "access_token=xxx" 或前面带了别的参数
+  s = s.replace(/^.*?access_token=/i, '');
+  // 3) 后面还挂了别的查询参数
+  s = s.replace(/[?&].*$/, '');
+  return s;
+}
+
+/** token 看起来是否正常（钉钉的是 64 位十六进制）；仅用于提示，不阻断发送 */
+export function looksLikeDingtalkToken(t) {
+  return /^[0-9a-f]{32,}$/i.test(t);
+}
+
 const mask = s => (!s ? '' : (s.length <= 8 ? '****' : s.slice(0, 4) + '****' + s.slice(-4)));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_ATTEMPTS = 5;
@@ -126,7 +156,14 @@ export class Pusher {
   /** 引擎产生信号时调用（同步、非阻塞） */
   push(alert) {
     if (!this.enabledChannels().length) return false;
-    if (alert.score < this.cfg.minScore) { this.stats.dropped++; return false; }
+    // 存量/回填信号（initial=true）只入面板，不推送 —— 它们描述的是已经发生过的形态，
+    // 推出去会让人误以为是刚出现的机会（重启后尤其明显）。
+    if (alert.initial) { this.stats.dropped++; return false; }
+    // 评分门槛只对有评分体系的信号（共振）生效。
+    // 形态提醒（双阴不破 / 双阳不穿）的 score 恒为 0，若也走同一个门槛，
+    // 用户把 minScore 设成 68 之后就再也收不到形态提醒了 —— 那正是最容易踩的坑。
+    const hasScore = alert.kind !== 'dual' && Number.isFinite(alert.score) && alert.score > 0;
+    if (hasScore && alert.score < this.cfg.minScore) { this.stats.dropped++; return false; }
     if (this.cfg.confirmedOnly && !alert.confirmed) { this.stats.dropped++; return false; }
     this.queue.push(alert);
     this.stats.queued++;
@@ -213,7 +250,8 @@ export class Pusher {
 
     if (ch.type === 'dingtalk') {
       const ts = Date.now();
-      url = `${dingtalkUrl()}?access_token=${encodeURIComponent(ch.accessToken)}`;
+      const token = normalizeDingtalkToken(ch.accessToken);
+      url = `${dingtalkUrl()}?access_token=${encodeURIComponent(token)}`;
       if (ch.secret) url += `&timestamp=${ts}&sign=${dingtalkSign(ch.secret, ts)}`;
       body = JSON.stringify({
         msgtype: 'markdown',
@@ -287,6 +325,17 @@ function judgeDingtalk(type, status, txt) {
   if (j.errcode === 310000) {
     return { ok: false, err: `dingtalk 安全设置不通过(310000)：${j.errmsg ?? ''} —— 若是「自定义关键词」，请在通道里填上关键词` };
   }
+  if (j.errcode === 300005) {
+    return {
+      ok: false,
+      // 保留 "errcode=300005 / token is not exist" 这些机器可读片段（测试与日志过滤要用），
+      // 后面再补上给人看的排查指引。
+      err: `dingtalk errcode=300005 token is not exist —— 钉钉找不到这个 access_token。`
+        + '常见原因：①把整条 Webhook 地址粘进了 Token 框（正确做法是只填 access_token= 后面那 64 位）；'
+        + '②机器人已被删除或重置；③复制时少了字符。'
+        + '请到钉钉群 → 群设置 → 智能群助手 → 机器人 → 复制完整 Webhook 地址重新粘贴。',
+    };
+  }
   return { ok: false, err: `dingtalk errcode=${j.errcode} ${j.errmsg ?? ''}` };
 }
 
@@ -296,23 +345,114 @@ function judgeDingtalk(type, status, txt) {
  * @returns {{title:string, text:string}}
  */
 export function formatAlerts(alerts, { test = false, keyword = '' } = {}) {
-  const head = test ? '🧪 钉钉推送测试' : `🔔 多级别共振信号 ×${alerts.length}`;
+  // —— 标题 ——
+  // 三类信号语义不同，标题不能一律写「共振信号」：
+  //   zeropair = 零轴配对（主级别定方向 + 次级别回踩触发）
+  //   dual     = 形态提醒（双阴不破 / 双阳不穿）
+  //   其它     = 多级别共振
+  const nZero = alerts.filter(a => a.kind === 'zeropair').length;
+  const nSingle = alerts.filter(a => a.kind === 'singlek').length;
+  const nDual = alerts.filter(a => a.kind === 'dual').length;
+  const nReso = alerts.length - nZero - nSingle - nDual;
+  const nTop = alerts.filter(a => a.tier === 'top').length;
+  const nTail = alerts.filter(a => a.tier === 'tail').length;
+  const only = nSingle === alerts.length ? 'single'
+    : nZero === alerts.length ? 'zero'
+    : nDual === alerts.length ? 'dual' : 'mixed';
+
+  let head;
+  if (test) head = '🧪 钉钉推送测试';
+  else if (only === 'single') head = `🔔 单K回踩不破 ×${nSingle}`;
+  else if (only === 'zero') head = `🔔 零轴配对信号 ×${nZero}`;
+  else if (only === 'dual') head = `🔔 形态提醒 ×${nDual}` + (nTop || nTail ? `（前段 ${nTop} · 后段 ${nTail}）` : '');
+  else head = `🔔 盯盘信号 ×${alerts.length}`;
+
   const title = (keyword ? keyword + ' ' : '') + (test
     ? '推送测试'
     : (alerts.length === 1
-      ? `${alerts[0].confirmed ? '✅' : '⚡'} ${alerts[0].symbol} ${alerts[0].score}分 ${alerts[0].base}→${alerts[0].mid}→${alerts[0].big}`
-      : `共振信号 ×${alerts.length}`));
+      ? (() => {
+          const a = alerts[0];
+          if (a.kind === 'singlek') return `${a.side === 'long' ? '🔴' : '🟢'} ${a.symbol} ${a.levelLabel ?? a.level} ${a.side === 'long' ? '看多' : '看空'}`;
+          if (a.kind === 'zeropair') return `${a.side === 'long' ? '🔴' : '🟢'} ${a.symbol} ${a.pair} ${a.side === 'long' ? '看多' : '看空'}`;
+          if (a.kind === 'dual') return `${a.side === 'long' ? '🔴' : '🟢'} ${a.symbol} ${a.levelLabel ?? ''} ${a.side === 'long' ? '看多' : '看空'}`;
+          return `${a.confirmed ? '✅' : '⚡'} ${a.symbol} ${a.score}分 ${a.base}→${a.mid}→${a.big}`;
+        })()
+      : (only === 'single' ? `单K ×${nSingle}` : only === 'zero' ? `零轴配对 ×${nZero}` : only === 'dual' ? `形态提醒 ×${nDual}` : `信号 ×${alerts.length}`)));
 
   const lines = [`### ${head}`, ''];
-  alerts.forEach((a, i) => {
-    const tag = a.confirmed ? '已确认' : '预警';
-    lines.push(`**${i + 1}. ${a.symbol}**　${a.score}分　${tag}`);
-    lines.push(`> 级别：${a.base} → ${a.mid} → ${a.big}　|　共振 ${a.bullCount} 级`);
-    lines.push(`> 价格：${a.price}　|　距MA7 ${a.distBaseMa7Pct >= 0 ? '+' : ''}${Number(a.distBaseMa7Pct ?? 0).toFixed(2)}%　|　${hhmm(a.ts)}`);
-    lines.push(`> ${a.text}`);
-    lines.push('');
-  });
-  if (!test) lines.push('---', '来源：币安多级别共振盯盘系统');
+  const footer = () => { if (!test) lines.push('---', '来源：币安多级别共振盯盘系统'); };
+
+  // —— ⓪ 单K回踩不破 ——
+  // 每条的看点是「推动有多强 + 回调有多浅 + 不破线在哪」，三样都要写清楚。
+  if (nSingle) {
+    const sk = alerts.filter(a => a.kind === 'singlek')
+      .sort((x, y) => (y.bigT ?? 0) - (x.bigT ?? 0) || (y.bodyPct ?? 0) - (x.bodyPct ?? 0));
+    if (only !== 'single') { lines.push(`#### ◎ 单K回踩不破　×${nSingle}`); lines.push(''); }
+    sk.forEach((a, i) => {
+      const up = a.side === 'long';
+      lines.push(`**${i + 1}. ${a.symbol}**　${a.levelLabel ?? a.level}　${up ? '看多' : '看空'}　榜内 #${a.rank ?? '—'}`);
+      lines.push(`> 单K ${up ? '+' : '−'}${Number(a.bodyPct ?? 0).toFixed(2)}%（实体放大 ${Number(a.mult ?? 0).toFixed(1)} 倍）`);
+      lines.push(`> ${up ? '回踩' : '反抽'} ${Number(a.retracePct ?? 0).toFixed(2)}%（${a.barsAfter ?? '—'} 根）　|　不破线 ${a.line ?? '—'}　|　现价 ${a.price}`);
+      lines.push(`> ${hhmm(a.ts)}`);
+      lines.push('');
+    });
+  }
+
+  // —— ① 零轴配对 ——
+  // 主级别只定方向，次级别才是触发点，所以两个级别都要写明，
+  // 并且把「次级别贴近程度」和「主级别 DIF」都列出来，方便判断强弱。
+  if (nZero) {
+    const zs = alerts.filter(a => a.kind === 'zeropair')
+      .sort((x, y) => (x.subNear ?? 9) - (y.subNear ?? 9) || (y.mainHold ?? 0) - (x.mainHold ?? 0));
+    if (only !== 'zero') { lines.push(`#### ◎ 零轴配对　×${nZero}`); lines.push(''); }
+    zs.forEach((a, i) => {
+      const up = a.side === 'long';
+      lines.push(`**${i + 1}. ${a.symbol}**　${a.pair}　${up ? '看多' : '看空'}`);
+      lines.push(`> 次级别 ${a.levelLabel ?? a.sub}：靠近零轴 ${(Number(a.subNear ?? 0) * 100).toFixed(1)}%`
+        + `　|　${up ? '零轴上方不下穿' : '零轴下方不上穿'}　|　已持续 ${a.subHold ?? '—'} 根`);
+      lines.push(`> 主级别 ${a.mainLabel ?? a.main}：DIF=${Number(a.mainDif ?? 0).toPrecision(4)}`
+        + `（${Number(a.mainDif) > 0 ? '零轴上方' : '零轴下方'}）　|　已持续 ${a.mainHold ?? '—'} 根`);
+      lines.push(`> 价格：${a.price}　|　${hhmm(a.ts)}`);
+      lines.push('');
+    });
+  }
+
+  // —— ② 形态提醒：前 N / 后 N 分开列 ——
+  if (nDual) {
+    const du = alerts.filter(a => a.kind === 'dual');
+    const tiered = du.some(a => a.tier);
+    const groups = tiered
+      ? [['top', '🅰 涨幅榜前段'], ['tail', '🅱 涨幅榜后段'], [null, '其他']]
+      : [[null, '形态提醒']];
+    for (const [key, label] of groups) {
+      const sub = du.filter(a => (a.tier ?? null) === key)
+        .sort((x, y) => (y.star ? 1 : 0) - (x.star ? 1 : 0) || (x.rank ?? 999) - (y.rank ?? 999));
+      if (!sub.length) continue;
+      const nStar = sub.filter(a => a.star).length;
+      if (only !== 'dual' || tiered) { lines.push(`#### ${label}　×${sub.length}${nStar ? `　⭐${nStar}` : ''}`); lines.push(''); }
+      sub.forEach((a, i) => {
+        const star = a.star ? '⭐ ' : '';
+        lines.push(`**${i + 1}. ${star}${a.symbol}**　${a.levelLabel ?? a.level}　${a.side === 'long' ? '看多' : '看空'}　已确认`);
+        lines.push(`> 价格：${a.price}　|　排名 #${a.rank ?? '—'}${a.star ? '　⭐星标' : ''}　|　${hhmm(a.ts)}`);
+        lines.push(`> ${String(a.text).replace(/^★\s*/, '').replace(/^【(前|后)\d+】/, '')}`);
+        lines.push('');
+      });
+    }
+  }
+
+  // —— ③ 共振 ——
+  if (nReso) {
+    if (only === 'mixed') { lines.push(`#### ◇ 多级别共振　×${nReso}`); lines.push(''); }
+    alerts.filter(a => a.kind !== 'zeropair' && a.kind !== 'dual').forEach((a, i) => {
+      lines.push(`**${i + 1}. ${a.symbol}**　${a.score}分　${a.confirmed ? '已确认' : '预警'}`);
+      lines.push(`> 级别：${a.base} → ${a.mid} → ${a.big}　|　共振 ${a.bullCount} 级`);
+      lines.push(`> 价格：${a.price}　|　距MA7 ${a.distBaseMa7Pct >= 0 ? '+' : ''}${Number(a.distBaseMa7Pct ?? 0).toFixed(2)}%　|　${hhmm(a.ts)}`);
+      lines.push(`> ${a.text}`);
+      lines.push('');
+    });
+  }
+
+  footer();
   return { title, text: lines.join('\n') };
 }
 

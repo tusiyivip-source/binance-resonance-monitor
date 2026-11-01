@@ -49,16 +49,25 @@ export function writeCache(file, obj, log) {
       log?.warn('本次没有可缓存的K线（尚未播种？）—— 跳过写盘，保留原有缓存');
       return null;
     }
-    let prevCount = 0;
+    let prevCount = 0, prevTopN = null;
     try {
       if (fs.existsSync(file)) {
         const prev = JSON.parse(fs.readFileSync(file, 'utf8'));
         prevCount = Object.keys(prev.symbols ?? {}).length;
+        prevTopN = prev.topN ?? null;
       }
     } catch { /* 旧文件坏了就当作没有 */ }
-    if (prevCount > 0 && count < prevCount * 0.5) {
+
+    // 监控数量被改动过（例如 200 → 50）时，标的大幅减少是**预期行为**，不该拦。
+    // prevTopN 为 null 表示是旧格式缓存（还没有 topN 字段），无法判断，
+    // 当作可能会变来处理 —— 否则从旧格式迁移过来时缓存会永远写不进去。
+    const topNChanged = prevCount > 0 && (prevTopN == null || (obj?.topN != null && prevTopN !== obj.topN));
+    if (!topNChanged && prevCount > 0 && count < prevCount * 0.5) {
       log?.warn(`本次只缓存到 ${count} 个标的（原有 ${prevCount} 个）—— 疑似异常缩水，跳过写盘以保留原有缓存`);
       return null;
+    }
+    if (topNChanged && prevCount > 0) {
+      log?.info(`监控数量 ${prevTopN ?? '未知'} → ${obj.topN ?? '未知'}，缓存随之下调为 ${count} 个标的（预期行为）`);
     }
 
     fs.mkdirSync(path.dirname(file), { recursive: true });

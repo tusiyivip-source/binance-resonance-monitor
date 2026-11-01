@@ -25,7 +25,7 @@ const CORE = [
   'config.js', 'indicators.js', 'chan.js', 'series.js', 'signals.js',
   'rest.js', 'market.js', 'tickfeed.js', 'engine.js',
   'emitter.js', 'logger.js', 'tracker.js', 'push-meta.js',
-  'watch.js',
+  'watch.js', 'zero-monitor.js', 'single-k.js',
 ];
 const BROWSER = ['boot.js'];
 const PUBLIC_FILES = ['app.js', 'chart.js', 'style.css'];

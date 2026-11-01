@@ -10,7 +10,7 @@ let SNAP = null;
 let HEADER_DONE = false;
 // null = 强制重建行顺序。注意不能用 ''：当筛选结果为空集时 orderKey 也是 ''，会被误判为"顺序未变"
 let lastOrderKey = null;
-let sortKey = 'change';
+let sortKey = 'firstNear';
 let sortDir = -1;
 let stockRows = new Map();   // symbol -> {tr, refs}
 let DISPLAY_ORDER = [];      // 当前表格显示顺序（供 K 线图 ◀ ▶ 使用）
@@ -50,6 +50,36 @@ function hhmmss(ts) {
 const base = s => s.replace(/USDT$/, '');
 const lvLabel = k => { const f = LEVELS.find(x => x.key === k); return f ? f.label : k; };
 
+function signalKind(a) { return a.kind ?? 'resonance'; }
+function signalConfirmed(a) {
+  return typeof a.confirmed === 'boolean' ? a.confirmed
+    : a.mode === 'closed' || ['dual', 'zeropair'].includes(signalKind(a));
+}
+function signalHasScore(a) {
+  return signalKind(a) === 'resonance' && Number.isFinite(a.score);
+}
+function signalChain(a) {
+  if (a.pair) return a.pair;
+  if (a.sub && a.main) return `${lvLabel(a.sub)} → ${lvLabel(a.main)}`;
+  if (signalKind(a) === 'dual') return `${lvLabel(a.level || a.base) || '—'} · ${a.side === 'short' ? '双阳不穿' : '双阴不破'}`;
+  return [a.base, a.mid, a.big].filter(Boolean).map(lvLabel).join(' → ') || '历史记录（组合未保存）';
+}
+function zeroFilterMatches(item) {
+  const symbol = item.symbol || item.sym || '';
+  const idx = SNAP?.symbols.indexOf(symbol) ?? -1;
+  const row = idx >= 0 ? SNAP.rows[idx] : null;
+  const side = item.dir || item.side;
+  const want = $('#f-side')?.value || 'all';
+  if (want !== 'all' && side !== want) return false;
+  if (!symbol.toUpperCase().includes(($('#q')?.value || '').trim().toUpperCase())) return false;
+  if (activeChips.has('up') && !((item.changePct ?? row?.[1]) > 0)) return false;
+  if (activeChips.has('sig') && item.signal === false) return false;
+  if (activeChips.has('conf') && item.confirmed === false) return false;
+  if (activeChips.has('seed') && !(item.seeded ?? row?.[7])) return false;
+  return true;
+}
+function filteredZeroPairs() { return (ZERO?.items || []).filter(zeroFilterMatches); }
+
 /* ---------------- 声音 ---------------- */
 let actx = null;
 function ensureAudio() {
@@ -83,19 +113,53 @@ function toast(html, isErr) {
   setTimeout(() => el.remove(), 5700);
 }
 
+async function requestJSON(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const data = await response.json();
+    if (!response.ok || data?.error) throw new Error(data?.error || `HTTP ${response.status}`);
+    return data;
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('请求超时，请检查连接后重试');
+    throw error;
+  } finally { clearTimeout(timer); }
+}
+
+async function runAction(button, action) {
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try { return await action(); }
+  catch (error) { toast('操作失败：' + escapeHTML(error.message), true); }
+  finally { if (button) button.disabled = false; }
+}
+function escapeHTML(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
 /* ---------------- SSE ---------------- */
 let sse = null, lastSnapAt = 0, snapGap = 0;
+let streamState = 'connecting';
+let marketHealth = { kind: 'warn', text: '行情源检查中' };
+function renderConnection() {
+  const age = lastSnapAt ? performance.now() - lastSnapAt : Infinity;
+  const stale = age > 8000;
+  const kind = streamState !== 'open' || stale ? 'bad' : marketHealth.kind;
+  const stream = streamState === 'open' ? (stale ? '页面数据中断' : '页面实时连接') : '页面连接重连中';
+  setWs(kind, `${stream} · ${marketHealth.text}`);
+}
 function connect() {
   if (sse) sse.close();
   sse = new EventSource('/api/stream');
-  sse.addEventListener('open', () => setWs('ok', '实时连接'));
-  sse.addEventListener('error', () => setWs('bad', '连接断开·重连中'));
+  sse.addEventListener('open', () => { streamState = 'open'; renderConnection(); });
+  sse.addEventListener('error', () => { streamState = 'error'; renderConnection(); });
   sse.addEventListener('hello', e => {
     const d = JSON.parse(e.data);
     LEVELS = d.levels;
     ALL_LEVELS = d.allLevels ?? d.levels;
     cfg = d.cfg;
-    buildHeader();
+    // 零轴表已改成「配对视图」，表头是固定的 12 列，不再按级别动态注入
     fillCfgForm();
     renderGroups();
     if (d.app?.marketName) {
@@ -113,8 +177,10 @@ function connect() {
     const t = performance.now();
     if (lastSnapAt) snapGap = t - lastSnapAt;
     lastSnapAt = t;
+    renderConnection();
     SNAP = JSON.parse(e.data);
-    if (!HEADER_DONE && SNAP.levels) { LEVELS = LEVELS.length ? LEVELS : SNAP.levels; buildHeader(); }
+    // 零轴表是固定的配对列，不再按级别注入表头（否则会多出 9 个空列把表格撑歪）
+    if (!LEVELS.length && SNAP.levels) LEVELS = SNAP.levels;
     render();
   });
   sse.addEventListener('alerts', e => {
@@ -137,7 +203,7 @@ function connect() {
         const tag = isDual
           ? (a.side === 'long' ? '🔴 双阴不破 · 看多' : '🟢 双阳不穿 · 看空')
           : (a.confirmed ? '✅ 共振确认' : '⚡ 共振预警');
-        const tail = isDual ? '' : ` · ${a.score}分`;
+        const tail = signalHasScore(a) ? ` · ${a.score}分` : '';
         toast(`<b>${base(a.symbol)}</b> ${a.levelLabel ? '· ' + a.levelLabel : ''} · ${tag}${tail}<br>
                <span style="color:#8ba0bd;font-size:11.5px">${a.text}</span>`);
         if (notifyOn && 'Notification' in window && Notification.permission === 'granted') {
@@ -159,15 +225,28 @@ function setWs(kind, text) {
 }
 
 /* ---------------- 表头 ---------------- */
-function buildHeader() {
-  if (HEADER_DONE) return;
+/**
+ * 建级别列表头。
+ * 级别集合以**后端返回的 levels 为准**（buildHeader 会被 renderZero 用接口数据再调一次），
+ * 这样后端增删级别时前端表头会自动跟上，不会出现列错位。
+ * 传进来的 keys 与上次相同就直接返回，避免每 2 秒重复重建。
+ */
+let HEADER_KEYS = '';
+function buildHeader(keys) {
+  const list = (keys && keys.length) ? keys : ZERO_LEVELS;
+  const sig = list.join(',');
+  if (HEADER_DONE && HEADER_KEYS === sig) return;
   HEADER_DONE = true;
+  HEADER_KEYS = sig;
   const head = $('#head');
-  for (const lv of LEVELS) {
+  // 先清掉旧的级别列，避免重复追加
+  head.querySelectorAll('th.lv').forEach(th => th.remove());
+  for (const key of list) {
+    const label = lvLabel(key);
     const th = document.createElement('th');
     th.className = 'lv';
-    th.textContent = lv.label ?? lv;
-    th.title = `${lv.label ?? lv} 级别`;
+    th.textContent = label ?? key;
+    th.title = `${label ?? key} 级别`;
     head.appendChild(th);
   }
 }
@@ -189,11 +268,12 @@ function makeRow(sym) {
   refs.price = td('c-price num', '');
   refs.chg = td('c-chg num', '');
   refs.vol = td('c-vol num', '');
-  refs.bull = td('c-bull num', '');
-  refs.score = td('c-score num', '');
+  refs.bull = td('c-bull num', '');       // 达标级别数
+  refs.longs = td('c-score num', '');     // 零轴上方达标
+  refs.shorts = td('c-score num', '');    // 零轴下方达标
   refs.flag = td('c-flag', '');
   refs.cells = [];
-  for (let i = 0; i < LEVELS.length; i++) {
+  for (let i = 0; i < ZERO_LEVELS.length; i++) {
     const c = td('lv', '<div class="cell"></div>');
     refs.cells.push(c.firstChild);
   }
@@ -207,157 +287,257 @@ function makeRow(sym) {
   return { tr, refs };
 }
 
-/* ---------------- 主渲染 ---------------- */
+/* ---------------- Seven independent timeframe monitors ---------------- */
+const ZERO_LEVELS = ['15m','30m','1h','2h','3h','4h','6h'];
+let ZERO = null;
+let pairListKey = '';
+const pairRows = new Map();
+function makeMonitorRow(p) {
+  const tr=document.createElement('tr'),refs={};
+  for(const key of ['rank','sym','level','dir','near','hold','dif','dea','first','price','chg','vol','time']) {
+    const td=document.createElement('td');td.className='c-'+key+(key==='sym'?'':' num');tr.appendChild(td);refs[key]=td;
+  }
+  refs.sym.textContent=base(p.symbol);
+  refs.sym.addEventListener('click',()=>typeof openChartFor==='function'?openChartFor(p.symbol):openDetail(p.symbol));
+  return {tr,refs};
+}
+function renderZero() {
+  if ($('#zero-mode')?.value==='chart'||!ZERO) return;
+  const list=filteredZeroPairs();
+  const cmp={sym:(a,b)=>a.symbol.localeCompare(b.symbol),price:(a,b)=>a.price-b.price,
+    change:(a,b)=>a.changePct-b.changePct,near:(a,b)=>a.near-b.near,
+    hold:(a,b)=>a.hold-b.hold,dif:(a,b)=>a.dif-b.dif,dea:(a,b)=>a.dea-b.dea}[sortKey];
+  if(cmp) list.sort((a,b)=>sortDir*cmp(a,b));
+  else list.sort((a,b)=>(a.firstNearAt??Infinity)-(b.firstNearAt??Infinity)||a.near-b.near);
+  DISPLAY_ORDER=[...new Set(list.map(p=>p.symbol))];
+  const identity=p=>p.symbol+'|'+p.level,key=list.map(identity).join(','),reorder=key!==pairListKey;
+  const frag=document.createDocumentFragment();
+  list.forEach((p,i)=>{
+    const id=identity(p);let r=pairRows.get(id);if(!r){r=makeMonitorRow(p);pairRows.set(id,r);}
+    const f=r.refs;f.rank.textContent=i+1;f.level.textContent=lvLabel(p.level);
+    f.dir.textContent=p.dir==='long'?'多':'空';f.near.textContent=(p.near*100).toFixed(1)+'%';
+    f.hold.textContent=p.hold;f.dif.textContent=Number(p.dif).toPrecision(4);f.dea.textContent=Number(p.dea).toPrecision(4);
+    f.first.textContent=zeroTime(p.firstNearAt);f.price.textContent=fmtPrice(p.price);
+    f.chg.textContent=pctStr(p.changePct);f.chg.className='c-chg num '+(p.changePct>0?'up':p.changePct<0?'down':'flat');
+    f.vol.textContent=fmtVol(p.quoteVolume);f.time.textContent=zeroTime(p.at);
+    if(reorder)frag.appendChild(r.tr);
+  });
+  if(reorder){$('#body').textContent='';$('#body').appendChild(frag);}pairListKey=key;
+  const keep=new Set(list.map(identity));for(const id of pairRows.keys())if(!keep.has(id))pairRows.delete(id);
+  $('#empty').style.display=list.length?'none':'block';
+  if(!list.length)$('#empty').textContent='七个独立周期当前没有符合靠近程度的级别，可放宽阈值或切换方向。';
+  $('#pill-bull').textContent='独立级别 '+list.length;
+  $('#zero-live').textContent='七周期独立监控 · 达标 '+list.length+' 个级别 · 最近更新 '+zeroTime(ZERO.t)+zeroStatusSuffix();
+}
+
+/** 解码一个级别格子（与 signals.js 的 encodeZero 对应） */
+function zeroCellInfo(code) {
+  if (!code) return null;
+  return {
+    side: Math.floor(code / 100000),            // 1=零轴上方 2=零轴下方
+    pull: Math.floor(code / 10000) % 10 === 1,  // 是否正在回调
+    hold: Math.floor(code / 100) % 100,         // 连续不破零轴根数
+    nearPct: code % 100,                        // 0..99，越小越回踩零轴
+  };
+}
+
 function render() {
-  if (!SNAP) return;
-  const { symbols, rows } = SNAP;
-
-  const q = $('#q').value.trim().toUpperCase();
-  const minBull = +$('#f-bull').value;
-  const minScore = +$('#f-score').value;
-
-  const list = [];
-  for (let i = 0; i < symbols.length; i++) {
-    const sym = symbols[i], r = rows[i];
-    if (!r) continue;
-    if (q && sym.indexOf(q) < 0) continue;
-    if (r[3] < minBull) continue;
-    if (r[5] < minScore) continue;
-    const flags = r[6], seeded = r[7];
-    if (activeChips.has('sig') && !flags) continue;
-    if (activeChips.has('conf') && flags !== 1) continue;
-    if (activeChips.has('up') && r[1] <= 0) continue;
-    if (activeChips.has('seed') && !seeded) continue;
-    list.push(i);
+  // 顶部统计与 PRICE 表仍取自主快照（报警卡片的「信号后」涨跌要用它）
+  if (SNAP) {
+    const { symbols, rows } = SNAP;
+    const pm = new Map();
+    for (let i = 0; i < symbols.length; i++) pm.set(symbols[i], rows[i][0]);
+    PRICE = pm;
+    $('#pill-sym').textContent = `标的 ${symbols.length}`;
+    const sigCount = rows.filter(r => r[6] === 1).length;
+    const pre = rows.filter(r => r[6] === 2).length;
+    $('#pill-sig').innerHTML = `信号 <b>${sigCount}</b>${pre ? ` <span style="color:#fbbf24">+${pre}预警</span>` : ''}`;
+    $('#pill-time').textContent = hhmmss(SNAP.t);
   }
+  renderZero();
+}
 
-  const dir = sortDir;
-  list.sort((a, b) => {
-    let x, y;
-    switch (sortKey) {
-      case 'sym': x = symbols[a]; y = symbols[b]; return x < y ? -dir : x > y ? dir : 0;
-      case 'price': x = rows[a][0]; y = rows[b][0]; break;
-      case 'score': x = rows[a][5]; y = rows[b][5]; break;
-      case 'bull': x = rows[a][3]; y = rows[b][3]; break;
-      default: x = rows[a][1]; y = rows[b][1];
+/**
+ * 多级别「回调不破零轴 + 回踩零轴」表。
+ *
+ * 服务端把每个级别压成一个整数，这里解码后**按界面上的筛选条件重新判定**，
+ * 所以改「靠近程度 / 方向 / 最少达标级别」立即生效，不用重新请求。
+ */
+function zeroTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts), p = n => String(n).padStart(2, '0');
+  return p(d.getMonth()+1)+'/'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+function zeroQuery() {
+  return new URLSearchParams({
+    q: $('#q')?.value || '', near: String(Number($('#f-near')?.value || 20) / 100),
+    side: $('#f-side')?.value || 'all',
+    onlyUp: activeChips.has('up') ? '1' : '0',
+    onlySignal: activeChips.has('sig') ? '1' : '0',
+    onlyConfirmed: activeChips.has('conf') ? '1' : '0',
+    onlySeeded: activeChips.has('seed') ? '1' : '0',
+  }).toString();
+}
+let zeroRequest = 0;
+let zeroController = null, zeroPendingQuery = null, zeroLastSuccess = 0, zeroError = '';
+function zeroStatusSuffix() {
+  const stale = zeroLastSuccess && Date.now() - zeroLastSuccess > 10_000;
+  return zeroError ? ' · 更新失败，保留旧数据：' + zeroError : stale ? ' · 数据已过期，等待更新' : '';
+}
+async function loadZero() {
+  const query=zeroQuery();
+  if (zeroPendingQuery === query && zeroController) return;
+  zeroController?.abort();
+  const request=++zeroRequest, controller=new AbortController();
+  zeroController=controller; zeroPendingQuery=query;
+  const timer=setTimeout(()=>controller.abort(), 15000);
+  try {
+    const response=await fetch('/api/zeroaxis?'+query,{signal:controller.signal});
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data=await response.json();
+    if(request!==zeroRequest || query!==zeroQuery()) return;
+    if(data.error) throw new Error(data.error);
+    ZERO=data; zeroLastSuccess=Date.now(); zeroError='';
+    DISPLAY_ORDER=[...new Set(filteredZeroPairs().map(p=>p.symbol))]; renderZero();
+  } catch(error) {
+    if(request!==zeroRequest) return;
+    zeroError=error.name==='AbortError'?'请求超时':error.message;
+    if ($('#zero-mode')?.value==='table') {
+      if(ZERO) renderZero(); else $('#zero-live').textContent='零轴数据加载失败：'+zeroError;
     }
-    return dir * (x - y);
-  });
-
-  const orderKey = list.join(',');
-  DISPLAY_ORDER = list.map(i => symbols[i]);
-  const body = $('#body');
-  const reorder = orderKey !== lastOrderKey;
-  lastOrderKey = orderKey;
-
-  if (reorder) {
-    const frag = document.createDocumentFragment();
-    for (const i of list) {
-      const sym = symbols[i];
-      let rec = stockRows.get(sym);
-      if (!rec) { rec = makeRow(sym); stockRows.set(sym, rec); }
-      frag.appendChild(rec.tr);
-    }
-    body.textContent = '';
-    body.appendChild(frag);
-  }
-
-  list.forEach((i, n) => {
-    const sym = symbols[i], r = rows[i];
-    const rec = stockRows.get(sym);
-    if (!rec) return;
-    const { refs } = rec, c = refs._cache;
-
-    if (c.rank !== n + 1) { refs.rank.textContent = n + 1; c.rank = n + 1; }
-
-    const price = fmtPrice(r[0]);
-    if (c.price !== price) { refs.price.textContent = price; c.price = price; }
-
-    const chg = pctStr(r[1]);
-    if (c.chg !== chg) {
-      refs.chg.textContent = chg;
-      refs.chg.className = 'c-chg num ' + (r[1] > 0 ? 'up' : r[1] < 0 ? 'down' : 'flat');
-      c.chg = chg;
-    }
-    const vol = fmtVol(r[2]);
-    if (c.vol !== vol) { refs.vol.textContent = vol; c.vol = vol; }
-
-    if (c.bull !== r[3]) {
-      refs.bull.textContent = r[3] || '';
-      refs.bull.style.color = r[3] >= 6 ? '#4ade80' : r[3] >= 3 ? '#a3e635' : '#64748b';
-      c.bull = r[3];
-    }
-    if (c.score !== r[5]) {
-      refs.score.textContent = r[5] || '';
-      refs.score.style.color = r[5] >= 70 ? '#fde047' : r[5] >= 50 ? '#fbbf24' : '#64748b';
-      c.score = r[5];
-    }
-    const flag = r[6] === 1 ? '🔔' : r[6] === 2 ? '🔕' : '';
-    if (c.flag !== flag) {
-      refs.flag.textContent = flag;
-      refs.flag.title = r[6] === 1 ? '已确认共振信号' : r[6] === 2 ? '未收盘预警' : '';
-      c.flag = flag;
-    }
-    const isSig = r[6] === 1;
-    if (c.sig !== isSig) { rec.tr.classList.toggle('sig', isSig); c.sig = isSig; }
-
-    for (let k = 0; k < LEVELS.length; k++) {
-      const cell = refs.cells[k];
-      const code = r[8 + k] ?? 0;
-      if (c['l' + k] === code) continue;
-      const st = code % 10, ev = Math.floor(code / 10);
-      cell.className = 'cell s' + st + (ev ? ' ev' + ev : '');
-      cell.textContent = ev === 4 ? '★' : ev === 1 ? '▲' : ev === 3 ? '▼' : ev === 2 ? '·' : '';
-      cell.title = `${lvLabel(LEVELS[k].key ?? LEVELS[k])}：${STATE_NAME[st]}${ev ? ' · ' + EVENT_NAME[ev] : ''}`;
-      c['l' + k] = code;
-    }
-  });
-
-  const emptyEl = $('#empty');
-  emptyEl.style.display = list.length ? 'none' : 'block';
-  if (!list.length && symbols.length) emptyEl.textContent = '当前筛选条件下没有匹配的币种';
-
-  const sigCount = rows.filter(r => r[6] === 1).length;
-  const pre = rows.filter(r => r[6] === 2).length;
-  const pm = new Map();
-  for (let i = 0; i < symbols.length; i++) pm.set(symbols[i], rows[i][0]);
-  PRICE = pm;
-  $('#pill-sym').textContent = `标的 ${symbols.length}`;
-  $('#pill-bull').innerHTML = `共振 <b>${rows.filter(r => r[3] >= 3).length}</b>`;
-  $('#pill-sig').innerHTML = `信号 <b>${sigCount}</b>${pre ? ` <span style="color:#fbbf24">+${pre}预警</span>` : ''}`;
-  $('#pill-time').textContent = hhmmss(SNAP.t);
-
-  // 长跑防漏：定期回收已跌出榜单的币种行缓存（DOM 节点在重建时已丢弃，这里清理 Map）
-  if ((render._n = (render._n || 0) + 1) % 60 === 0) {
-    const live = new Set(symbols);
-    for (const sym of stockRows.keys()) if (!live.has(sym)) stockRows.delete(sym);
+  } finally {
+    clearTimeout(timer);
+    if(request===zeroRequest){zeroController=null;zeroPendingQuery=null;}
   }
 }
 
+/* ---------------- 单K推动 + 回调不破（独立策略，只扫涨幅榜前 N） ---------------- */
+let SINGLE = null;
+let singleTimer = null;
+
+async function loadSingleK() {
+  try {
+    const r = await fetch('/api/singlek');
+    if (!r.ok) return;
+    SINGLE = await r.json();
+    renderSingleK();
+  } catch { /* 单次失败忽略 */ }
+}
+
+function renderSingleK() {
+  const body = $('#singlebody');
+  if (!body || !SINGLE) return;
+  const items = SINGLE.items || [];
+  const frag = document.createDocumentFragment();
+  items.forEach((it, i) => {
+    const tr = document.createElement('tr');
+    const td = (cls, txt, title) => {
+      const c = document.createElement('td');
+      c.className = cls;
+      if (txt != null) c.textContent = txt;
+      if (title) c.title = title;
+      tr.appendChild(c);
+      return c;
+    };
+    td('c-rank', i + 1);
+    const sym = td('c-sym', `${base(it.symbol)} · #${it.rank}`,
+      `${it.symbol}　涨幅榜第 ${it.rank} 名`);
+    sym.style.cursor = 'pointer';
+    sym.addEventListener('click', () => { if (typeof openChartFor === 'function') openChartFor(it.symbol); });
+    td('c-lv', it.levelLabel || it.level);
+    const dirCell = td('c-dir', (it.side === 'short' ? '空' : '多'));
+    dirCell.style.color = it.side === 'short' ? '#ef4444' : '#22c55e';
+    const up = it.side !== 'short';
+    td('c-num ' + (up ? 'up' : 'down'), (up ? '+' : '−') + it.bodyPct.toFixed(2) + '%',
+      `${up ? '大阳线' : '大阴线'}收盘 ${it.close} / 开盘 ${it.open}`);
+    td('c-num', it.mult.toFixed(1) + '倍', '实体相对近20根平均实体的倍数');
+    td('c-num', it.retracePct.toFixed(2) + '%',
+      up ? `回调期间最低收盘 ${it.minClose}` : `反抽期间最高收盘 ${it.maxClose}`);
+    td('c-num', it.barsAfter + ' 根', `${up ? '大阳线之后已回调' : '大阴线之后已反抽'}多少根`);
+    td('c-num', String(it.line ?? it.low), up ? '回调期间所有收盘都没跌破这个价格' : '反抽期间所有收盘都没涨破这个价格');
+    td('c-num', fmtPrice(it.price));
+    const chg = td('c-num ' + (it.changePct > 0 ? 'up' : it.changePct < 0 ? 'down' : ''), pctStr(it.changePct));
+    chg.title = '24 小时涨跌幅';
+    td('c-num', fmtVol(it.quoteVolume));
+    td('c-time', zeroTime(it.t), '大阳线的收盘时间');
+    frag.appendChild(tr);
+  });
+  body.textContent = '';
+  body.appendChild(frag);
+  const emptyEl = $('#single-empty');
+  if (emptyEl) emptyEl.style.display = items.length ? 'none' : 'block';
+}
+
+function singleModeNow() {
+  return ($('#single-mode')?.value) === 'table' ? 'table' : 'chart';
+}
+/** 按「K线图 / 表格」切换单K页的两种展示，并启停对应的轮询 */
+function applySingleMode() {
+  const tbl = singleModeNow() === 'table';
+  const tw = $('#singletablewrap'), cw = $('#singlechartwrap');
+  if (tw) tw.style.display = tbl ? '' : 'none';
+  if (cw) cw.style.display = tbl ? 'none' : '';
+  if (tbl) { loadSingleK(); startSinglePoll(); }
+  else { stopSinglePoll(); if (typeof refreshActive === 'function') refreshActive(); }
+}
+function startSinglePoll() {
+  if (singleTimer) return;
+  loadSingleK();
+  singleTimer = setInterval(loadSingleK, 8000);
+}
+function stopSinglePoll() {
+  if (singleTimer) { clearInterval(singleTimer); singleTimer = null; }
+}
+
 /* ---------------- 报警列表 ---------------- */
+function signalChange(a, now) {
+  if (!Number.isFinite(now) || !Number.isFinite(a.price) || a.price <= 0) return null;
+  return ((now - a.price) / a.price) * 100 * (a.side === 'short' ? -1 : 1);
+}
+function signalChangeText(a) {
+  const change = signalChange(a, PRICE.get(a.symbol));
+  const label = a.side === 'short' ? '看空表现' : '看多表现';
+  return change == null ? `${label} —` : `${label} ${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+}
+let renderedAlerts = [];
 function renderAlerts() {
   const box = $('#alertlist');
   $('#alert-count').textContent = alerts.length;
+  const visible = alerts.slice(0, 120);
+  if (renderedAlerts.length === visible.length && visible.every((a, i) => a === renderedAlerts[i]) && box.childElementCount) {
+    box.querySelectorAll('[data-signal-change]').forEach((node, i) => {
+      const change = signalChange(visible[i], PRICE.get(visible[i].symbol));
+      node.textContent = signalChangeText(visible[i]);
+      node.style.color = change == null ? '#5b6f8c' : change >= 0 ? '#22c55e' : '#ef4444';
+    });
+    return;
+  }
+  renderedAlerts = visible;
   const frag = document.createDocumentFragment();
-  for (const a of alerts.slice(0, 120)) {
+  for (const a of visible) {
     const el = document.createElement('div');
     el.className = 'acard ' + (a.confirmed ? 'confirmed' : 'pre');
     const extra = (a.matchCount ?? (a.combos ? a.combos.length : 1)) - 1;
     // 防御：不同来源的报警字段并不一致（形态提醒没有 bullCount / distBaseMa7Pct），
     // 直接 .toFixed() 会抛异常并让整个面板渲染中断 —— 这里全部做存在性判断。
     const isDual = a.kind === 'dual';
+    // 前 N / 后 N 分组标签（后端在 dual 报警里带了 tier，老记录没有就留空）
+    const tierTxt = a.tier === 'top' ? '<b style="color:#f0b90b">前段</b>'
+      : a.tier === 'tail' ? '<b style="color:#7dd3fc">后段</b>' : '';
+    // 星标：涨幅榜最靠前那批，卡片左侧加一条金色竖条 + ★
+    const starTxt = a.star ? '<b style="color:#fde047" title="涨幅榜前' + (a.starRank || 20) + '名">★</b> ' : '';
     const chainTxt = isDual
-      ? (lvLabel(a.level || a.base) + (a.side === 'long' ? ' · 双阴不破' : ' · 双阳不穿'))
-      : (lvLabel(a.base) + ' → ' + lvLabel(a.mid) + ' → ' + lvLabel(a.big));
+      ? (starTxt + tierTxt + ((starTxt || tierTxt) ? ' · ' : '')
+        + lvLabel(a.level || a.base) + (a.side === 'long' ? ' · 双阴不破' : ' · 双阳不穿')
+        + (Number.isFinite(a.rank) ? ` <span style="color:#5b6f8c">#${a.rank}</span>` : ''))
+      : signalChain(a);
     const bullTxt = Number.isFinite(a.bullCount) ? ('共振 ' + a.bullCount + ' 级') : '';
     const distTxt = Number.isFinite(a.distBaseMa7Pct)
       ? ('距MA7 ' + (a.distBaseMa7Pct >= 0 ? '+' : '') + a.distBaseMa7Pct.toFixed(2) + '%') : '';
-    const scoreTxt = isDual ? '' : (a.score + '分');
+    const scoreTxt = signalHasScore(a) ? a.score + '分' : '';
     // 信号后表现追踪：用当前价与信号价对比，便于用户自行验证信号有效性
-    const now = PRICE.get(a.symbol);
-    const since = (now && a.price) ? ((now - a.price) / a.price) * 100 : null;
-    const sinceTxt = since == null ? '<span style="color:#5b6f8c">信号后 —</span>'
-      : `<span style="color:${since >= 0 ? '#22c55e' : '#ef4444'}">信号后 ${since >= 0 ? '+' : ''}${since.toFixed(2)}%</span>`;
+    const since = signalChange(a, PRICE.get(a.symbol));
+    const sinceTxt = `<span data-signal-change style="color:${since == null ? '#5b6f8c' : since >= 0 ? '#22c55e' : '#ef4444'}" title="按信号方向计算的价格变化，未扣除交易成本">${signalChangeText(a)}</span>`;
     el.innerHTML = `
       <div class="l1">
         <span class="sym">${a.symbol}</span>
@@ -366,7 +546,7 @@ function renderAlerts() {
         <span class="score">${scoreTxt}</span>
       </div>
       <div class="chain">${chainTxt}${extra > 0 ? ` <span style="color:#5b6f8c">(+${extra} 组)</span>` : ''}</div>
-      <div class="txt">${a.text}</div>
+      <div class="txt">${escapeHTML(a.text)}</div>
       <div class="meta">
         <span>@${fmtPrice(a.price)}</span>
         ${bullTxt ? '<span>' + bullTxt + '</span>' : ''}
@@ -380,7 +560,7 @@ function renderAlerts() {
   if (!alerts.length) {
     const p = document.createElement('div');
     p.style.cssText = 'color:#5b6f8c;font-size:12px;padding:14px;text-align:center;line-height:1.8';
-    p.innerHTML = '暂无共振信号<br><span style="font-size:11px">系统正持续扫描 200 个标的 × 13 个级别</span>';
+    p.innerHTML = '暂无共振信号<br><span style="font-size:11px">系统正持续扫描涨幅榜前列标的 × 全部级别</span>';
     frag.appendChild(p);
   }
   box.textContent = '';
@@ -392,8 +572,11 @@ window.closeDetailThenChart = function (sym) {
   $('#detail').classList.add('hidden');
   if (typeof openChartFor === 'function') openChartFor(sym);
 };
+let detailRequest = 0;
 async function openDetail(sym) {
-  const d = await fetch('/api/detail?symbol=' + sym).then(r => r.json()).catch(() => null);
+  const request=++detailRequest;
+  const d = await requestJSON('/api/detail?symbol=' + encodeURIComponent(sym)).catch(() => null);
+  if(request!==detailRequest) return;
   if (!d || d.error) { toast('获取 ' + sym + ' 详情失败', true); return; }
   $('#d-title').innerHTML = `${sym} <span style="font-size:12px;color:${d.changePct >= 0 ? '#22c55e' : '#ef4444'}">${pctStr(d.changePct)}</span>`;
   let html = `<div class="dsum">
@@ -474,7 +657,8 @@ async function openPerf() {
     <div class="k"><i>已结算 +4h</i><b>${resolved}</b></div>
   </div>`;
 
-  if (!d.tracked) {
+  if (d.legacyExcluded) html += `<div class="hint">保留 ${d.legacyExcluded} 条旧口径记录；因缺少可靠方向信息，不纳入下方多空收益统计。新记录按信号方向计算，未扣除交易成本。</div>`;
+  if (!d.total) {
     html += `<div class="hint">还没有信号记录。系统每产生一条报警都会存入 <code>data/signals.jsonl</code>，
       并在 1 / 4 / 24 小时后自动结算实际涨跌幅。运行一段时间后回到这里，就能看到这套逻辑在你本机实际数据上的表现。</div>`;
   } else {
@@ -508,7 +692,7 @@ async function openPerf() {
 
     html += `<h3 style="font-size:13px;margin:16px 0 6px">最近信号明细</h3>
       <table class="lvtable"><thead><tr>
-        <th>时间</th><th>币种</th><th>组合</th><th>评分</th><th>信号价</th><th>+1h</th><th>+4h</th><th>+24h</th>
+        <th>时间</th><th>币种</th><th>方向</th><th>组合</th><th>评分</th><th>信号价</th><th>+1h</th><th>+4h</th><th>+24h</th>
       </tr></thead><tbody>`;
     for (const r of d.recent || []) {
       const t = new Date(r.ts);
@@ -516,12 +700,13 @@ async function openPerf() {
       html += `<tr>
         <td>${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}</td>
         <td>${r.symbol}${r.confirmed ? '' : ' <span style="color:#fbbf24">预</span>'}</td>
-        <td>${lvLabel(r.base)}→${lvLabel(r.mid)}→${lvLabel(r.big)}</td>
-        <td>${r.score}</td>
+        <td>${r.legacy ? '历史方向未知' : r.side === 'short' ? '空' : '多'}</td>
+        <td>${escapeHTML(signalChain(r))}</td>
+        <td>${signalHasScore(r) && !r.legacy ? r.score : '—'}</td>
         <td>${fmtPrice(r.price)}</td>
-        <td>${fxPct(r.out?.h1)}</td>
-        <td>${fxPct(r.out?.h4)}</td>
-        <td>${fxPct(r.out?.h24)}</td>
+        <td>${fxPct(r.legacy ? null : r.out?.h1)}</td>
+        <td>${fxPct(r.legacy ? null : r.out?.h4)}</td>
+        <td>${fxPct(r.legacy ? null : r.out?.h24)}</td>
       </tr>`;
     }
     html += `</tbody></table>`;
@@ -713,10 +898,10 @@ function updatePushStats(st) {
 
 async function savePush() {
   const body = collectPush();
-  const r = await fetch('/api/push', {
+  const savedCfg = await requestJSON('/api/push', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
-  const cfg = await r.json();
+  const cfg = savedCfg;
   PUSH_CFG = cfg;
   renderPush();
   const d = await fetch('/api/push').then(x => x.json());
@@ -738,6 +923,7 @@ const CFG_FIELDS = [
   ['watchEnabled', 'bool'], ['watchBigBars', 'int'], ['watchRequireBear', 'bool'],
   ['dualEnabled', 'bool'], ['dualBars', 'int'], ['dualMinQuoteVolume', 'num'],
   ['signalEnabled', 'bool'],
+  ['zeroAlertEnabled', 'bool'],
 ];
 const CFG_DEFAULTS = {
   minBullLevels: 3, pullbackLookback: 6, pullbackTolerance: 0.002, triggerLookback: 2,
@@ -748,7 +934,7 @@ const CFG_DEFAULTS = {
   requireStrokeChain: true, chainRequireAboveMa: false,
   pullbackPattern: 'twoBearHold', pullbackBars: 2,
   watchEnabled: true, watchBigBars: 2, watchRequireBear: true,
-  dualEnabled: true, dualBars: 2, dualMinQuoteVolume: 4000000, signalEnabled: false,
+  dualEnabled: true, dualBars: 2, dualMinQuoteVolume: 4000000, signalEnabled: false, zeroAlertEnabled: true,
 };
 
 let CFG_SNAPSHOT = {};
@@ -781,10 +967,10 @@ function readCfgForm() {
   return v;
 }
 async function postCfg(patch) {
-  const r = await fetch('/api/config', {
+  const nextCfg = await requestJSON('/api/config', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
   });
-  cfg = await r.json();
+  cfg = nextCfg;
   fillCfgForm();
   return cfg;
 }
@@ -808,26 +994,39 @@ async function saveCfg() {
 
 /* ---------------- 状态轮询 ---------------- */
 let MARKET_NAME = '';
+let statsPending = false;
 async function pollStats() {
+  if (statsPending) return;
+  statsPending = true;
   try {
-    const s = await fetch('/api/stats').then(r => r.json());
+    const s = await requestJSON('/api/stats');
     const m = s.market;
+    let strategy = $('#pill-strategy');
+    if (!strategy) {
+      strategy = document.createElement('span'); strategy.id = 'pill-strategy'; strategy.className = 'pill';
+      $('#pill-sig').after(strategy);
+    }
+    const modes = s.engine.cfg ?? {};
+    const enabled = [modes.zeroAlertEnabled && '零轴配对', modes.signalEnabled && '共振', modes.watchEnabled && '观察', modes.dualEnabled && '双阴/双阳'].filter(Boolean);
+    strategy.textContent = '策略：' + (enabled.join('、') || '全部关闭');
+    strategy.className = 'pill ' + (enabled.length ? '' : 'warn');
     if (m.feedMode === 'tick-rest') {
       // 合约模式：没有 K线 WS 分片，实时价走 !bookTicker，K线由 REST 滚动补
       const t = m.tick ?? {};
       const fresh = t.lastPriceAt && (Date.now() - t.lastPriceAt) < 30_000;
       const on = t.state === 'open' && fresh;
-      setWs(on ? 'ok' : t.state === 'open' ? 'warn' : 'bad',
-        `${m.marketName ?? '合约'} · 实时价 ${on ? '在线' : t.state === 'open' ? '无数据' : '重连中'}`);
+      marketHealth = { kind: on ? 'ok' : t.state === 'open' ? 'warn' : 'bad',
+        text: `${m.marketName ?? '合约'} · 实时价 ${on ? '在线' : t.state === 'open' ? '无数据' : '重连中'}` };
     } else {
       const shards = m.shards ?? [];
       const open = shards.filter(x => x.state === 'open').length;
       const streams = shards.reduce((n, x) => n + x.streams, 0);
-      setWs(open === shards.length && open > 0 ? 'ok' : open ? 'warn' : 'bad',
-        `WS ${open}/${shards.length} · ${streams}流`);
+      marketHealth = { kind: open === shards.length && open > 0 ? 'ok' : open ? 'warn' : 'bad',
+        text: `行情 WS ${open}/${shards.length} · ${streams}流` };
     }
+    renderConnection();
     const age = m.lastKlineAt ? Date.now() - m.lastKlineAt : -1;
-    $('#pill-lat').textContent = `推送 ${snapGap ? Math.round(snapGap) : '—'}ms · 行情 ${age < 0 ? '—' : (age / 1000).toFixed(1) + 's'}`;
+    $('#pill-lat').textContent = `更新间隔 ${snapGap ? Math.round(snapGap) : '—'}ms · 行情 ${age < 0 ? '—' : (age / 1000).toFixed(1) + 's'}`;
     const t = m.tick;
     $('#pill-lat').title = `权重 ${m.rest.lastUsedWeight}/${m.weightCap} · 往返 ${m.rest.avgLatency}ms`
       + ` · 播种 ${m.seeding.done}/${m.seeding.total} · 评估耗时 ${s.engine.lastSweepMs}ms`
@@ -848,32 +1047,81 @@ async function pollStats() {
         ? `成笔链已开启${s.engine.cfg.chainRequireAboveMa ? '（含站上MA7）' : ''}`
           + ` · 累计因「回踩不够成笔」拦下 <b>${s.engine.strokeBlocked ?? 0}</b> 次评估`
           + ` · 已产生信号 ${s.engine.signalCount} 条`
-        : `成笔链已关闭（当前不检查回踩深度）`;
+        : `成笔链已关闭（当前不检查靠近程度）`;
     }
-  } catch { /* 忽略轮询失败 */ }
+  } catch { marketHealth = { kind: 'warn', text: '行情状态查询失败' }; renderConnection(); }
+  finally { statsPending = false; }
 }
 
 /* ---------------- 交互 ---------------- */
 function bind() {
-  $('#q').addEventListener('input', () => { lastOrderKey = null; render(); });
-  ['#f-bull', '#f-score'].forEach(s => $(s).addEventListener('change', () => { lastOrderKey = null; render(); }));
-
-  $('#f-bigma').addEventListener('change', async e => {
-    const c = await postCfg({ bigMa: e.target.value });
-    toast('最大级别判定均线：' + (c.bigMa === 'ema7' ? 'EMA7' : 'MA7'));
+  let filterTimer;
+  const updateZero = () => {
+    lastOrderKey=null; sortKey='firstNear';
+    document.querySelectorAll('th.sortable').forEach(th=>th.classList.remove('asc','desc'));
+    renderZero(); loadZero();
+    if(typeof activeView!=='undefined' && activeView==='zero') refreshZeroView();
+  };
+  $('#q').addEventListener('input', () => { clearTimeout(filterTimer); filterTimer=setTimeout(updateZero, 200); });
+  // 零轴视图的筛选（纯前端重算，不发请求）
+  ['#f-side', '#f-near'].forEach(s => {
+    const el = $(s);
+    if (el) el.addEventListener('change', updateZero);
   });
-  $('#f-groups').addEventListener('click', () => { fillCfgForm(); renderGroups(); $('#cfgpanel').classList.remove('hidden'); });
+  // 旧的共振筛选已随矩阵视图移除，这里保留空引用保护
+  ['#f-bull', '#f-score'].forEach(s => {
+    const el = $(s);
+    if (el) el.addEventListener('change', () => { lastOrderKey = null; render(); });
+  });
+
+  if ($('#f-bigma')) $('#f-bigma').addEventListener('change', e => {
+    const input = e.currentTarget, previous = cfg?.bigMa;
+    runAction(input, async () => {
+      try {
+        const c = await postCfg({ bigMa: input.value });
+        toast('最大级别判定均线：' + (c.bigMa === 'ema7' ? 'EMA7' : 'MA7'));
+      } catch (error) { input.value = previous; throw error; }
+    });
+  });
+  // 单K回踩不破：默认平铺 K 线墙，可切表格
+const tabSingle = $('#tab-single');
+if (tabSingle) tabSingle.addEventListener('click', () => {
+  if (typeof setView === 'function') setView('single');
+  applySingleMode();
+});
+['#tab-zero', '#tab-alert'].forEach(s => { const el = $(s); if (el) el.addEventListener('click', stopSinglePoll); });
+const singleModeSel = $('#single-mode');
+if (singleModeSel) singleModeSel.addEventListener('change', applySingleMode);
+const singleLimitSel = $('#single-limit');
+if (singleLimitSel) singleLimitSel.addEventListener('change', () => { if (singleModeNow() === 'chart') refreshActive(); });
+const singleSizeSel = $('#single-size');
+if (singleSizeSel) singleSizeSel.addEventListener('change', () => {
+  // 只改布局：立刻按新列数重排，不必等下一次请求
+  if (singleModeNow() === 'chart' && typeof applyCols === 'function' && typeof VIEWS !== 'undefined') {
+    applyCols(VIEWS.single);
+  }
+});
+const singleRefreshBtn = $('#single-refresh');
+if (singleRefreshBtn) singleRefreshBtn.addEventListener('click', () => {
+  if (singleModeNow() === 'table') loadSingleK(); else refreshActive();
+});
+
+$('#f-groups').addEventListener('click', () => { fillCfgForm(); renderGroups(); $('#cfgpanel').classList.remove('hidden'); });
   $('#btn-addgroup').addEventListener('click', () => {
     if (!cfg?.groups) cfg = { ...(cfg || {}), groups: [] };
     cfg.groups.push({ base: '3m', mid: '15m', big: '2h', enabled: true });
     renderGroups();
   });
-  $('#btn-preset').addEventListener('click', async () => {
+  $('#btn-preset').addEventListener('click', e => runAction(e.currentTarget, async () => {
     await postCfg({ groups: PRESET_GROUPS.map(g => ({ ...g })), scanMode: 'groups' });
     renderGroups();
     toast('已恢复示例组合：3分→15分→2时 / 2分→10分→1时 / 5分→30分→3时');
+  }));
+  $('#t-live').addEventListener('change', e => {
+    const input = e.currentTarget, previous = !!cfg?.useLiveCandle;
+    runAction(input, async () => { try { await postCfg({ useLiveCandle: input.checked }); }
+      catch (error) { input.checked = previous; throw error; } });
   });
-  $('#t-live').addEventListener('change', e => postCfg({ useLiveCandle: e.target.checked }));
 
   document.querySelectorAll('th.sortable').forEach(th => {
     th.addEventListener('click', () => {
@@ -884,7 +1132,6 @@ function bind() {
       lastOrderKey = null; render();
     });
   });
-  document.querySelector('th.sortable[data-sort=change]').classList.add('desc');
 
   const CHIPS = [['sig', '仅看信号'], ['conf', '仅已确认'], ['up', '仅上涨'], ['seed', '仅数据完整']];
   const box = $('#chips');
@@ -894,7 +1141,7 @@ function bind() {
     el.addEventListener('click', () => {
       if (activeChips.has(k)) activeChips.delete(k); else activeChips.add(k);
       el.classList.toggle('on', activeChips.has(k));
-      lastOrderKey = null; render();
+      updateZero();
     });
     box.appendChild(el);
   }
@@ -925,10 +1172,10 @@ function bind() {
     }, 30_000);
   });
   $('#btn-clear').addEventListener('click', () => { alerts = []; renderAlerts(); });
-  $('#btn-resync').addEventListener('click', async () => {
-    await fetch('/api/resync');
+  $('#btn-resync').addEventListener('click', e => runAction(e.currentTarget, async () => {
+    await requestJSON('/api/resync');
     toast('已触发全量对账，稍后自动修复K线缺口');
-  });
+  }));
   $('#btn-addpush').addEventListener('click', () => {
     if (!PUSH_CFG) PUSH_CFG = { channels: [] };
     if (!PUSH_CFG.channels) PUSH_CFG.channels = [];
@@ -939,8 +1186,8 @@ function bind() {
     const el = $('#push-msg');
     el.style.color = '#fbbf24';
     el.textContent = '正在保存并发送…';
-    await savePush();
     try {
+      await savePush();
       const r = await fetch('/api/push/test', { method: 'POST' }).then(x => x.json());
       if (r.ok) { el.style.color = '#22c55e'; el.textContent = '✓ 测试消息已发送，请查看钉钉群'; }
       else {
@@ -951,21 +1198,42 @@ function bind() {
     setTimeout(() => { el.textContent = ''; }, 12000);
   });
 
-  $('#btn-cfgsave').addEventListener('click', async () => {
-    await saveCfg();
-    await saveGroups();
-    await savePush();
-  });
-  $('#btn-cfgreset').addEventListener('click', async () => {
+  $('#btn-cfgsave').addEventListener('click', e => runAction(e.currentTarget, async () => {
+    const groups = structuredClone(cfg?.groups ?? []);
+    const index = key => ALL_LEVELS.findIndex(l => l.key === key);
+    if (groups.some(g => index(g.base) < 0 || !(index(g.base) < index(g.mid) && index(g.mid) < index(g.big)))) {
+      throw new Error('组合顺序必须为 基准 < 确认 < 最大');
+    }
+    const pushBody = collectPush();
+    const patch = readCfgForm();
+    for (const key of Object.keys(patch)) if (CFG_SNAPSHOT[key] === patch[key]) delete patch[key];
+    patch.groups = groups;
+    patch.scanMode = $('#c-scanModeAuto').checked ? 'auto' : 'groups';
+    await postCfg(patch);
+    alerts = [];
+    renderAlerts();
+    // The two endpoints are independent: report a partial save explicitly.
+    try {
+      PUSH_CFG = await requestJSON('/api/push', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pushBody),
+      });
+      renderPush();
+    } catch (error) { throw new Error('信号参数已保存，但推送配置保存失败：' + error.message); }
+    renderGroups();
+    updateGroupChip();
+    toast('参数、组合与推送配置已保存');
+  }));
+  $('#btn-cfgreset').addEventListener('click', e => runAction(e.currentTarget, async () => {
     await postCfg({ ...CFG_DEFAULTS, groups: PRESET_GROUPS.map(g => ({ ...g })), scanMode: 'groups' });
     renderGroups();
     toast('已恢复默认参数与示例组合');
-  });
+  }));
   document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', e => {
     e.target.closest('.drawer').classList.add('hidden');
   }));
   document.addEventListener('keydown', e => {
-    if (e.key === '/' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); }
+    const editing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || document.activeElement?.tagName || '') || e.target?.isContentEditable;
+    if (e.key === '/' && !editing) { e.preventDefault(); $('#q').focus(); }
     if (e.key === 'Escape') {
       document.querySelectorAll('.drawer').forEach(d => d.classList.add('hidden'));
       $('#q').blur();
@@ -981,6 +1249,10 @@ connect();
 loadPush();
 setInterval(pollStats, 3000);
 pollStats();
+// 零轴数据独立轮询（2 秒）：200 标的 × 14 级别约 2800 个格子，
+// 塞进 SSE 会让每帧多几十 KB，所以单独一个接口 + 单独节奏。
+setInterval(loadZero, 2000);
+loadZero();
 // 推送状态与报警卡片的"信号后"涨跌幅一起刷新
 setInterval(() => { if (alerts.length) renderAlerts(); }, 5000);
 setInterval(async () => {
@@ -988,6 +1260,6 @@ setInterval(async () => {
   try { const d = await fetch('/api/push').then(r => r.json()); updatePushStats(d.stats); } catch { /* 忽略 */ }
 }, 5000);
 setInterval(() => {
-  const age = lastSnapAt ? performance.now() - lastSnapAt : 99999;
-  if (age > 8000) setWs('bad', '数据中断');
+  renderConnection();
+  if ($('#zero-mode')?.value==='table' && ZERO) renderZero();
 }, 4000);

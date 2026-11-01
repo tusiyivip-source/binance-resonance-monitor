@@ -36,6 +36,19 @@ export class CandleSeries {
   get lastClosedIndex() { return this.closedCount - 1; }
   get formingIndex() { return this.t.length - 1; }
 
+  /** Binance weekly candles start on Monday UTC; the Unix epoch starts on Thursday. */
+  bucketAt(time) {
+    const offset = this.key === '1w' ? 4 * 86400_000 : 0;
+    return Math.floor((time - offset) / this.ms) * this.ms + offset;
+  }
+
+  /** Remove legacy synthetic Thursday weeks and repair their cached close flags. */
+  normalizeRows(rows, now = Date.now()) {
+    if (this.key !== '1w') return rows;
+    return rows.filter(r => r.t === this.bucketAt(r.t))
+      .map(r => ({ ...r, done: r.t + this.ms <= now }));
+  }
+
   /** 原生周期：直接 upsert 币安 WS/REST 的K线 */
   upsert(k) {
     const n = this.t.length;
@@ -76,7 +89,7 @@ export class CandleSeries {
    */
   applyTick(price, now) {
     if (!Number.isFinite(price) || price <= 0) return false;
-    const bucket = Math.floor(now / this.ms) * this.ms;
+    const bucket = this.bucketAt(now);
     const n = this.t.length;
     if (n === 0) {
       this.t.push(bucket); this.o.push(price); this.h.push(price); this.l.push(price);
@@ -111,6 +124,7 @@ export class CandleSeries {
 
   /** REST 批量灌入（覆盖式） */
   bulkLoad(rows) {
+    rows = this.normalizeRows(rows);
     this.t = []; this.o = []; this.h = []; this.l = []; this.c = [];
     this.v = []; this.q = []; this.n = []; this.done = [];
     for (const r of rows) {
@@ -143,6 +157,7 @@ export class CandleSeries {
    * 已收盘的旧K线不会变，所以合并是安全的；正在形成的那根由新数据覆盖。
    */
   mergeLoad(rows) {
+    rows = this.normalizeRows(rows);
     if (!rows.length) return;
     const first = rows[0].t;
     const n = this.t.length;
@@ -184,7 +199,7 @@ export class CandleSeries {
     const T = [], O = [], H = [], L = [], C = [], V = [], Q = [], N = [], D = [];
     let bt = -1, idx = -1;
     for (let i = 0; i < t.length; i++) {
-      const bucket = Math.floor(t[i] / this.ms) * this.ms;
+      const bucket = this.bucketAt(t[i]);
       if (bucket !== bt) {
         bt = bucket; idx++;
         T.push(bucket); O.push(o[i]); H.push(h[i]); L.push(l[i]); C.push(c[i]);

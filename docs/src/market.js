@@ -93,9 +93,12 @@ export class Market {
       const st = this.symbols.get(sym);
       if (!st || st.seeded) continue;
       let any = false;
+      const repairedLevels = [];
       for (const lv of NATIVE_LEVELS) {
         const rows = levels[lv.key];
         if (!Array.isArray(rows) || !rows.length) continue;
+        const series = st.series[lv.key];
+        if (lv.key === '1w' && rows.some(r => r[0] !== series.bucketAt(r[0]) || (r[8] && r[0] + series.ms > Date.now()))) repairedLevels.push(lv.key);
         st.series[lv.key].mergeLoad(rows.map(r => ({
           t: r[0], o: r[1], h: r[2], l: r[3], c: r[4], v: r[5], q: r[6], n: r[7], done: !!r[8],
         })));
@@ -107,7 +110,7 @@ export class Market {
         st.series[lv.key].rebuildFrom(st.series[lv.from]);
       }
       // 缓存期间若又收盘了新K线，就标记为陈旧，稍后只补这几个级别
-      st.cacheStaleLevels = NATIVE_LEVELS.filter(lv => cacheNeedsFetch(st.series[lv.key], lv.minutes * 60_000)).map(lv => lv.key);
+      st.cacheStaleLevels = [...new Set([...repairedLevels, ...NATIVE_LEVELS.filter(lv => cacheNeedsFetch(st.series[lv.key], lv.minutes * 60_000)).map(lv => lv.key)])];
       st.cacheStale = st.cacheStaleLevels.length > 0;
       if (st.cacheStale) stale++;
       st.seeded = true;
@@ -126,7 +129,9 @@ export class Market {
    * 只存每个原生级别最近 CACHE_BARS_KEEP 根，够算 MA25/EMA7 与基本缠论即可。
    */
   collectCache() {
-    const out = { v: 1, savedAt: Date.now(), symbols: {} };
+    // topN 一并写进缓存：改过监控数量（比如 200 → 50）时，
+    // 写盘的「缩水保护」要能认出这是人为改动，而不是异常掉数据。
+    const out = { v: 1, savedAt: Date.now(), topN: APP.topN, symbols: {} };
     for (const [sym, st] of this.symbols) {
       if (!st.seeded) continue;
       const one = {};
@@ -231,7 +236,9 @@ export class Market {
       }
       // 新建/更新状态
       const fresh = [];
+      let rank = 0;
       for (const r of rows.slice(0, APP.topN)) {
+        rank++;
         let st = this.symbols.get(r.symbol);
         if (!st) {
           st = createSymbolState(r.symbol);
@@ -244,6 +251,8 @@ export class Market {
         st.high = r.high;
         st.low = r.low;
         st.tickerAt = this.lastTickerAt;
+        // 涨幅榜名次（1 起）。用来把「前 N 名」和「后 N 名」分开提醒。
+        st.rank = rank;
       }
       this.revision++;
       if (fresh.length) this.log.info(`涨幅榜更新：+${fresh.length} 个新标的（共 ${this.universe.length}）`);

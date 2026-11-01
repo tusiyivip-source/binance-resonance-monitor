@@ -149,6 +149,43 @@ console.log('\n\u001b[36m▌2. 单条发送与请求结构\u001b[0m');
     ok('正式消息带来源尾注', real.text.includes('来源：币安多级别共振盯盘系统'));
     ok('正式消息标题为单信号摘要', real.title.includes('SRC') && real.title.includes('3m→15m→2h'), real.title);
   }
+
+  /* ---- 零轴配对信号（kind=zeropair）---- */
+  {
+    const mk = (sym, side, pair, sub, main, subNear, mainDif) => ({
+      kind: 'zeropair', symbol: sym, side, pair, sub, main,
+      levelLabel: sub, mainLabel: main,
+      subNear, subHold: 30, mainDif, mainHold: 40,
+      price: 1.2345, ts: Date.now(), confirmed: true, score: 0,
+      text: `【${pair}】主级别 ${main} DIF 在零轴${mainDif > 0 ? '上方' : '下方'}（持续 40 根），次级别 ${sub} 回踩到零轴附近 ${(subNear * 100).toFixed(1)}% 但未${mainDif > 0 ? '下穿' : '上穿'}零轴`,
+    });
+    const L = mk('AAVEUSDT', 'long', '3m-15m', '3分', '15分', 0.023, 1.184);
+    const S = mk('CFGUSDT', 'short', '1h-6h', '1时', '6时', 0.012, -0.004105);
+
+    const one = formatAlerts([L], {});
+    ok('★ 单条配对信号标题写明币种+配对+方向',
+      one.title.includes('AAVEUSDT') && one.title.includes('3m-15m') && one.title.includes('看多'), one.title);
+    ok('★ 配对标题为「零轴配对信号 ×1」', one.text.includes('零轴配对信号 ×1'), one.text.split('\n')[0]);
+    ok('★ 正文写明次级别靠近程度与主级别 DIF',
+      /次级别 3分：靠近零轴 2\.3%/.test(one.text) && /主级别 15分：DIF=1\.184/.test(one.text),
+      one.text.split('\n').slice(2, 5).join(' / '));
+    ok('★ 多头写明「零轴上方不下穿」', one.text.includes('零轴上方不下穿'));
+
+    const two = formatAlerts([L, S], {});
+    ok('配对消息带来源尾注', two.text.includes('来源：币安多级别共振盯盘系统'));
+    ok('空头写明「零轴下方不上穿」', two.text.includes('零轴下方不上穿'));
+    ok('配对消息按贴近程度排序（更贴的在前）',
+      two.text.indexOf('CFGUSDT') < two.text.indexOf('AAVEUSDT'),
+      'CFG 1.2% 应排在 AAVE 2.3% 之前');
+
+    // 混合：配对 + 形态提醒 → 分段标题
+    const mixed = formatAlerts([L, { kind: 'dual', symbol: 'XUSDT', side: 'long', levelLabel: '30分', tier: 'top', rank: 5, star: true, price: 1, ts: Date.now(), confirmed: true, score: 0, text: '【前50】双阴不破' }], {});
+    ok('★ 混合消息分成「零轴配对 / 涨幅榜前段」两段',
+      mixed.text.includes('盯盘信号')
+      && mixed.text.includes('◎ 零轴配对')
+      && mixed.text.includes('🅰 涨幅榜前段'),
+      mixed.text.split('\n').filter(l => l.startsWith('#')).join(' | '));
+  }
 }
 
 /* ---------------- 3. 批量聚合 ---------------- */

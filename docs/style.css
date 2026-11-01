@@ -37,6 +37,13 @@ button,input,select{font-family:inherit;font-size:13px;color:inherit}
 .pill.bad i{background:var(--down);box-shadow:0 0 8px var(--down)}
 .pill.warn i{background:var(--warn)}
 .actions{display:flex;gap:6px}
+.btn:disabled{opacity:.55;cursor:wait}
+.acard .meta{flex-wrap:wrap}
+@media(max-width:1280px){
+  #topbar{flex-wrap:wrap;gap:8px 14px}
+  .pills{min-width:0}
+  #pill-ws{white-space:normal}
+}
 .btn{
   background:var(--bg3);border:1px solid var(--line);color:var(--fg2);
   padding:5px 10px;border-radius:6px;cursor:pointer;transition:.15s;white-space:nowrap;
@@ -163,6 +170,32 @@ body.alertchartmode #alertchartgrid::-webkit-scrollbar-track{background:#0a1018}
 body.alertchartmode #alertchartgrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
 body.alertchartmode #alertchartgrid::-webkit-scrollbar-thumb:hover{background:#3b5170}
 body.alertchartmode #chartgrid{display:none}
+
+/* ---------- 零轴回调的 K 线图视图 ----------
+   与「报警级别K线」同一套卡片外观，只是每张图画的是某个 (币种 × 级别)
+   的零轴回调达标形态，排序按贴近程度。 */
+#zerochartwrap{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
+body.zerochartmode #zerochartwrap{display:flex}
+body.zerochartmode #chartgrid{display:none}
+body.zerochartmode #tablewrap{display:none}
+#zerochartgrid{
+  flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;padding:10px;display:grid;
+  grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));
+  grid-auto-rows:max-content;
+  gap:10px;align-content:start;
+  scroll-behavior:smooth;
+  overscroll-behavior:contain;
+}
+body.zerochartmode #zerochartgrid::-webkit-scrollbar{width:11px}
+body.zerochartmode #zerochartgrid::-webkit-scrollbar-track{background:#0a1018}
+body.zerochartmode #zerochartgrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
+body.zerochartmode #zerochartgrid::-webkit-scrollbar-thumb:hover{background:#3b5170}
+/* 零轴卡片：多头蓝红边、空头绿边，一眼区分方向 */
+.chartcard.mode-zero-long{border-color:#22c55e}
+.chartcard.mode-zero-short{border-color:#ef4444}
+.cchead .zside{font-weight:700}
+.cchead .zside.long{color:#22c55e}
+.cchead .zside.short{color:#ef4444}
 /* 报警卡片：按确认/预警区分边框 */
 .chartcard.mode-closed{border-color:#0ea5e9}
 .chartcard.mode-live{border-color:#475569}
@@ -218,6 +251,41 @@ td.lv{padding:1.5px!important;text-align:center}
 .ev2{box-shadow:inset 0 -3px 0 -1px #94a3b8}
 .ev3{border-color:#f87171}
 .ev4{border-color:var(--star);box-shadow:0 0 7px rgba(253,224,71,.65);color:#fffbeb}
+
+/* ---------- 多级别零轴回调 ----------
+   零轴上方＝多头侧（用项目 --up 绿），零轴下方＝空头侧（用项目 --down 红）。
+   与同一张表里 24h% 的涨跌配色保持一致，避免同一行出现两套相反的红绿。
+   zf0..zf9 表示贴近零轴的程度：0 最贴（最亮），9 最远（最暗）。
+   达标格子加 zok：白框 + 发光，一眼能扫出来。 */
+.cell.z0{background:#111925;color:transparent;border-color:transparent}
+.cell.zup{color:#ffe4e6}
+.cell.zdn{color:#dcfce7}
+.cell.zup.zf0{background:rgba(34,197,94,.92)}
+.cell.zup.zf1{background:rgba(34,197,94,.78)}
+.cell.zup.zf2{background:rgba(34,197,94,.64)}
+.cell.zup.zf3{background:rgba(34,197,94,.50)}
+.cell.zup.zf4{background:rgba(34,197,94,.38)}
+.cell.zup.zf5{background:rgba(34,197,94,.28)}
+.cell.zup.zf6{background:rgba(34,197,94,.20)}
+.cell.zup.zf7{background:rgba(34,197,94,.14)}
+.cell.zup.zf8{background:rgba(34,197,94,.09)}
+.cell.zup.zf9{background:rgba(34,197,94,.05);color:#9aa7b8}
+.cell.zdn.zf0{background:rgba(239,68,68,.92)}
+.cell.zdn.zf1{background:rgba(239,68,68,.78)}
+.cell.zdn.zf2{background:rgba(239,68,68,.64)}
+.cell.zdn.zf3{background:rgba(239,68,68,.50)}
+.cell.zdn.zf4{background:rgba(239,68,68,.38)}
+.cell.zdn.zf5{background:rgba(239,68,68,.28)}
+.cell.zdn.zf6{background:rgba(239,68,68,.20)}
+.cell.zdn.zf7{background:rgba(239,68,68,.14)}
+.cell.zdn.zf8{background:rgba(239,68,68,.09)}
+.cell.zdn.zf9{background:rgba(239,68,68,.05);color:#9aa7b8}
+.cell.zok{border-color:#fff;box-shadow:0 0 8px rgba(255,255,255,.55);color:#fff}
+/* 图例 */
+.lg.zup{background:rgba(34,197,94,.75);color:#fff}
+.lg.zdn{background:rgba(239,68,68,.75);color:#fff}
+.lg.zq{background:rgba(255,255,255,.16);border:1px solid #fff;color:#fff}
+.lg.z0{background:#111925;color:#9aa7b8}
 
 .empty{padding:26px;text-align:center;color:var(--fg3)}
 
@@ -329,3 +397,58 @@ td.lv{padding:1.5px!important;text-align:center}
 ::-webkit-scrollbar-thumb{background:#26364f;border-radius:5px}
 ::-webkit-scrollbar-thumb:hover{background:#33486a}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* 七级别零轴交叉监控 */
+.zero-guide{padding:8px 14px;background:#101b2b;border-bottom:1px solid #243348;font-size:12px;color:#8fa3bd;line-height:1.7}
+.zero-guide strong{color:#b9d9ee;margin-right:18px}.zero-guide span{display:inline-block}
+.zero-guide details{font-size:11px;max-width:1200px}.zero-guide summary{cursor:pointer;color:#7197b7}
+body:not(.zeromonitor) .zero-guide{display:none}
+.zero-meta{padding:5px 9px 7px;background:#101b29;color:#9cafc6;font-size:11px;line-height:1.8;border-bottom:1px solid #253247}
+.zero-meta[hidden]{display:none}.zero-meta>div{display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap}
+.zero-meta b{color:#63c8ef}.cross-golden{color:#f0c647!important}.cross-death{color:#bd9bff!important}
+#zerochartgrid .cchead{flex-wrap:wrap;height:auto;min-height:28px;overflow:visible}
+#zerochartgrid .cchead .lv{flex:0 1 auto;min-width:0}
+#zerochartgrid .zero-meta{flex-shrink:0}
+#zerochartgrid .cchead .px{font-size:10px}#zerochartgrid .cchead .sp{font-size:11px;color:#a6c6dd}
+#grid .z-monitor{height:auto;min-height:63px;min-width:118px;white-space:nowrap;padding:5px 7px;text-align:left;line-height:1.6;font-size:11px;border:1px solid #253248;border-radius:4px;background:#101c2c;color:#70829b;opacity:.55}
+#grid .z-monitor span,#grid .z-monitor small{display:block;font-size:10px}
+#grid .z-monitor.z-selected{opacity:1;color:#c7d8e9}
+#grid .z-selected.z-near{border-color:#338fb4;background:#112b3a}
+#grid .z-selected.z-watch{border-color:#796038;background:#2a251a}
+#grid .z-missing{color:#58718a;background:#101925}
+
+/* ---------- 单K回踩不破（独立策略表） ---------- */
+#view-single{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
+body.singlemode #view-single{display:flex}
+/* 注意：#view-single 是 #view-matrix 的子节点，不能隐藏 #view-matrix 本身
+   ——父容器一旦 display:none，整个子树宽高都是 0，图表的 canvas 会变成 0×0，
+      一个像素都画不出来（实测踩过）。这里只隐藏该视图内部的表格与零轴图。 */
+body.singlemode #tablewrap{display:none}
+body.singlemode #zerochartwrap{display:none}
+body.singlemode #alertchartwrap{display:none}
+#singletablewrap{flex:1;min-width:0;overflow:auto;position:relative;min-height:0}
+#singlegrid{width:100%;border-collapse:collapse;font-size:12.5px}
+#singlegrid thead th{position:sticky;top:0;z-index:2;background:#0b1620;color:#8ba0bd;
+  font-weight:600;text-align:left;padding:7px 8px;border-bottom:1px solid #1c2b3d;white-space:nowrap}
+#singlegrid tbody td{padding:6px 8px;border-bottom:1px solid #131f2d;white-space:nowrap}
+#singlegrid tbody tr:hover{background:#101c29}
+#singlegrid .c-num{text-align:right;font-variant-numeric:tabular-nums}
+#singlegrid .c-rank{text-align:right;color:#5b6f8c}
+#singlegrid .c-lv{color:#f0b90b}
+#singlegrid .up{color:#22c55e}#singlegrid .down{color:#ef4444}
+
+/* ---------- 单K策略：平铺 K 线墙 ---------- */
+#singlechartwrap{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
+body.singlemode #singlechartwrap{display:flex}
+/* 表格/图表的切换由 JS 写内联 style 控制（applySingleMode），
+   这里不要再加 display:none 规则，否则内联 style 会被 CSS 覆盖、切不过去。 */
+#singlechartgrid{
+  flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;padding:10px;display:grid;
+  grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));
+  grid-auto-rows:max-content;gap:10px;align-content:start;
+  scroll-behavior:smooth;overscroll-behavior:contain;
+}
+body.singlemode #singlechartgrid::-webkit-scrollbar{width:11px}
+body.singlemode #singlechartgrid::-webkit-scrollbar-track{background:#0a1018}
+body.singlemode #singlechartgrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
+body.singlemode #singlechartgrid::-webkit-scrollbar-thumb:hover{background:#3b5170}

@@ -162,6 +162,22 @@ async function handleRequest(req, res) {
     const d = engine.chart(sym, bars);
     return d ? json(res, d) : json(res, { error: 'not found' }, 404);
   }
+  if (url.pathname === '/api/zeroaxis') {
+    return json(res, engine.zeroAxis(Object.fromEntries(url.searchParams)));
+  }
+  if (url.pathname === '/api/singlek') {
+    return json(res, engine.singleKScan(Object.fromEntries(url.searchParams)));
+  }
+  if (url.pathname === '/api/singlekchart') {
+    const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 120));
+    const limit = Math.max(1, Math.min(60, Number(url.searchParams.get('limit')) || 24));
+    return json(res, engine.singleKCharts(bars, limit, Object.fromEntries(url.searchParams)));
+  }
+  if (url.pathname === '/api/zerochart') {
+    const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 150));
+    const limit = Math.max(1, Math.min(60, Number(url.searchParams.get('limit')) || 24));
+    return json(res, engine.zeroCharts(bars, limit, Object.fromEntries(url.searchParams)));
+  }
   if (url.pathname === '/api/watch') {
     const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 60));
     return json(res, engine.watchSnapshot(limit));

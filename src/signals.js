@@ -136,6 +136,33 @@ export function findTwoBullHold(series, ind, idx, bars = 2) {
  *
  * @param {number} dir 1 = 做多（双阴不破）, -1 = 做空（双阳不穿）
  */
+
+/** 零轴形态是否达标（三条同时成立） */
+
+/**
+ * 把零轴状态压成一个整数，方便 200×14 的表格走 SSE / JSON（避免每帧几万个对象）。
+ *   code = side*100000 + pull*10000 + hold*100 + nearPct
+ *   side: 1=零轴上方(多) 2=零轴下方(空) 0=无数据
+ *   nearPct: 0..99，越小越贴近零轴
+ */
+export function encodeZero(z) {
+  if (!z) return 0;
+  const nearPct = Math.max(0, Math.min(99, Math.round(z.near * 99)));
+  const hold = Math.max(0, Math.min(99, z.hold));
+  return (z.side > 0 ? 1 : 2) * 100000 + (z.pull ? 1 : 0) * 10000 + hold * 100 + nearPct;
+}
+
+/** 解码（前端也用，所以放这里共享同一份口径） */
+export function decodeZero(code) {
+  if (!code) return null;
+  return {
+    side: Math.floor(code / 100000),            // 1=上方 2=下方
+    pull: Math.floor(code / 10000) % 10 === 1,
+    hold: Math.floor(code / 100) % 100,
+    near: (code % 100) / 99,                    // 0..1
+  };
+}
+
 export function dualPattern(series, ind, idx, cfg, dir) {
   const bars = cfg.dualBars ?? 2;
   const shape = dir > 0

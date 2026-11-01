@@ -190,6 +190,18 @@ function routeApi(pathname, search) {
       const d = engine.chart(sym, bars);
       return d ? { body: d } : { body: { error: 'not found' }, status: 404 };
     }
+    case '/api/zeroaxis': return { body: safe(() => engine.zeroAxis(Object.fromEntries(q)), { rows: [], symbols: [], levels: [] }) };
+    case '/api/singlek': return { body: safe(() => engine.singleKScan(Object.fromEntries(q)), { items: [], total: 0, levels: [] }) };
+    case '/api/singlekchart': {
+      const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 120));
+      const limit = Math.max(1, Math.min(60, Number(q.get('limit')) || 24));
+      return { body: safe(() => engine.singleKCharts(bars, limit, Object.fromEntries(q)), { items: [], total: 0 }) };
+    }
+    case '/api/zerochart': {
+      const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 150));
+      const limit = Math.max(1, Math.min(60, Number(q.get('limit')) || 24));
+      return { body: safe(() => engine.zeroCharts(bars, limit, Object.fromEntries(q)), { items: [], total: 0, shown: 0 }) };
+    }
     case '/api/alertchart': {
       const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 150));
       const limit = Math.max(1, Math.min(60, Number(q.get('limit')) || 24));

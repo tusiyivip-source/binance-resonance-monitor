@@ -132,6 +132,53 @@ export const DEFAULT_SIGNAL = {
   // 成交额门槛：24H 成交额低于此值不提醒（单位 USDT）。
   // 小成交额的币容易凑出「两根K线勉强不破均线」的假形态，而且滑点大、实际不好成交。
   dualMinQuoteVolume: 4_000_000,   // 400 万 USDT
+  // 时效闸门：K线收盘超过这么多秒就不再提醒（0=不限制）。
+  // 防止「标的刚进榜 / 服务刚重启」时把早已收盘的旧K线当成新信号推出来。
+  dualMaxStaleSec: 120,
+  // 涨幅榜名次分界：名次 ≤ 该值算「前 N」，其余算「后 N」，报警里分开标注。
+  dualTierSplit: 50,
+  // 星标名次：涨幅榜前 N 名的提醒打上 ★，扫消息时一眼能挑出最热的那批。0 = 不打星。
+  dualStarRank: 20,
+
+  // —— 多级别零轴监控：**回踩零轴不破（多） / 上穿零轴不穿（空）** ——
+  //   不破/不穿：DIF 已经在该侧持续 zeroMinHoldBars 根（趋势成立过，全程没穿越零轴）
+  //   回踩/上穿：DIF 从该侧高点回落到零轴附近，深度用
+  //              |DIF| ÷ 最近 zeroLookback 根的最大 |DIF| 衡量，≤ zeroMaxNear 视为到位
+  //   碰到就算，不要求已经拐头离开零轴。
+  //
+  //   为什么要「先持续 N 根」：只看 |DIF| 小的话，「刚上穿零轴」和「涨上去之后回踩到零轴」
+  //   数值完全一样 —— 前者是趋势刚起步，根本不是回踩。这条是区分两者的关键。
+  zeroMaxNear: 0.20,       // 回踩深度上限：|DIF| ÷ 近期最大 |DIF|（0=完全贴零轴，1=不限）
+  zeroMinHoldBars: 3,
+  // 双级别配对里，主级别**金叉/死叉**至少要持续的根数（排除刚交叉又立刻反向）
+  zeroMainMinHold: 1,
+  // 主级别已在零轴同侧（多=上方 / 空=下方）时，是否要求**没有明显背驰**。
+  // 已在零轴上方还能做多，前提是这波上涨没有衰竭；MACD 柱面积明显萎缩就别追。
+  zeroMainNoDivergence: true,
+
+  // —— 单K推动 + 回调不破（独立策略，只扫涨幅榜前 N 名） ——
+  singleKTopN: 200,          // 只监控涨幅榜前 200
+  singleKMinGainPct: 2,      // 单K实体涨幅下限（%）
+  singleKMult: 1.5,          // 实体 ≥ 近 N 根平均实体 × 该倍数
+  singleKLookback: 20,       // 在这多少根内找那根大阳线
+  singleKMaxAfter: 12,       // 回调最多持续多少根（超过视为过期）
+  // 单K信号是否推送钉钉
+  singleKAlertEnabled: true,
+  // 当前K线收盘超过这么多秒就不再报警（防重启后把存量一次性推出去）
+  singleKAlertStaleSec: 120,
+  // 零轴配对信号是否推送钉钉（true=推送）
+  zeroAlertEnabled: false,   // 零轴配对推送已停用（改推单K回踩不破）
+  // 次级别K线收盘超过这么多秒就不再报警（防重启后把存量一次性推出去）
+  zeroMaxStaleSec: 120,
+  // 左侧「大级别推动K线 + 回调不破」结构：
+  // 只看主级别 DIF 在零轴同侧太弱（任何温和走势都满足），
+  // 还要求主级别上出现过一根放量推动K线（多=大阳 / 空=大阴），且回调没吃掉它的实体。
+  zeroRequireBigCandle: true,
+  zeroBigLookback: 20,       // 在最近多少根主级别K线内找那根推动K线
+  zeroBigCandleMult: 1.5,    // 实体 ≥ 近20根平均实体 × 该倍数才算「大」
+  zeroBigBasis: 'body',      // body=以实体底/顶为不破线；low=以最低/最高价为线
+  zeroRequirePull: false,  // 是否额外要求 |DIF| 正在缩小（碰到就算，默认不要求）
+  zeroLookback: 60,        // 计算近期振幅的回看根数
   // —— 缠论背驰过滤（排除「确认级别将要出现背驰笔」的信号） ——
   filterBeichi: true,      // 总开关
   beichiScope: 'mid',      // mid = 只查确认级别；mid+big = 连最大级别一起查
@@ -206,6 +253,11 @@ export const APP = {
   klinesPath: PROFILE.klinesPath,
   tickerPath: PROFILE.tickerPath,
   exchangeInfoPath: PROFILE.exchangeInfoPath,
+  // 监控涨幅榜前 N 个标的。
+  //   · 前 50  → 全量播种 50×12=600 个请求 / 1200 权重，约 1.1 分钟
+  //   · 前 100 → 全量播种 100×12=1200 个请求 / 2400 权重，约 2.2 分钟
+  //   合约官方额度 2400/分钟，自身预算 1100+突发 200=1300/分钟，
+  //   所以播种会被闸门摊开到两分钟以上，不会一次打满。
   topN: 200,
   candleLimit: 200,          // 默认K线根数（各级别可在 LEVELS 里单独覆盖）
   tickerRefreshMs: 60_000,   // 涨幅榜刷新

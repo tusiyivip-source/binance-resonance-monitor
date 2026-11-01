@@ -34,3 +34,10 @@ docs/img/alerts-chart.png
 # K线磁盘缓存（体积大，重启时自动重建）
 data/klines-cache.json
 data/klines-cache.json.tmp
+docs/img/zero-axis.png
+docs/img/zero-charts.png
+
+# 新增策略的校验截图
+docs/img/single-k.png
+docs/img/single-k-table.png
+docs/img/second-buy-sell.png

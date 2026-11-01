@@ -7,11 +7,13 @@
  * 4) 信号引擎「负样例」必须不触发（最大级别破位 / 共振级别不足 / 无回踩 / 相邻未上穿）
  * 5) 真实行情冒烟测试
  */
+import { ZERO_LEVEL_KEYS, ZERO_PAIRS, zeroOptions, zeroMonitorAt, zeroMatches, zeroPairHit, bigCandleSupport } from '../src/zero-monitor.js';
+import { SINGLE_K_LEVELS, singleKOptions, singleKAt } from '../src/single-k.js';
 import { CandleSeries } from '../src/series.js';
 import { memoryStorage } from '../src/file-storage.js';
 import * as CandleSeriesMod from '../src/series.js';
 import { buildSMA, buildEMA } from '../src/indicators.js';
-import { evaluateSymbol, analyzeLevel, findResonance, triplesFor, strokeChain, checkStrokeChain, findTwoBearHold, findTwoBullHold, dualPattern } from '../src/signals.js';
+import { evaluateSymbol, analyzeLevel, findResonance, triplesFor, strokeChain, checkStrokeChain, findTwoBearHold, findTwoBullHold, dualPattern, encodeZero, decodeZero } from '../src/signals.js';
 import { LEVELS, VISIBLE_LEVELS, DEFAULT_SIGNAL, DEFAULT_GROUPS, LEVEL_INDEX, APP, DEFAULT_WATCH_GROUPS } from '../src/config.js';
 import { Watcher } from '../src/watch.js';
 
@@ -332,7 +334,7 @@ section('6. 绩效追踪模块（信号结算与统计）');
   ok('priceAt 随目标时刻推进而前移', Tracker.priceAt(s, 360_000) === 101 && Tracker.priceAt(s, 900_000) === 104,
     `t=360000 → ${Tracker.priceAt(s, 360_000)}, t=900000 → ${Tracker.priceAt(s, 900_000)}`);
   ok('priceAt 对超出区间更早的时刻返回 null', Tracker.priceAt(s, -1) === null);
-  ok('priceAt 对未来时刻取到最后一根（由调用方用 now 兜底）', Tracker.priceAt(s, 9e12) === 105);
+  ok('priceAt 不把过期价格沿用到未来的结算点', Tracker.priceAt(s, 9e12) === null);
 
   // 结算：构造一条 2 小时前的记录，应能算出 +1h，且 +4h 仍为待结算
   const tmp = 'data/_test-signals.jsonl';
@@ -365,7 +367,7 @@ section('6. 绩效追踪模块（信号结算与统计）');
 
   const st = tr.stats();
   ok('stats 汇总结构完整',
-    st.tracked === 1 && st.horizons.length === 3 && st.byScore.length === 4,
+    st.tracked === 1 && st.horizons.length === 3 && st.byScore.length === 5 && st.byScore.at(-1).name === '未评分',
     `tracked=${st.tracked} 分档=${st.byScore.length}`);
   try { (await import('node:fs')).rmSync(tmp, { force: true }); } catch { }
 }
@@ -1283,44 +1285,363 @@ section('15. 双阴/双阳判定修正（含刚收盘那根 + 均线方向 + 前
 
 
 /* ============ 16. 形态提醒的成交额门槛 ============ */
-section('16. 形态提醒：24H 成交额下限（低于阈值不提醒）');
+/* ============ 17. 零轴监控：回踩零轴不破 / 上穿零轴不穿 ============ */
+section('17. 零轴监控：回踩零轴不破（多）/ 上穿零轴不穿（空）');
 {
-  const { Engine } = await import('../src/engine.js');
-  const mkLog = () => ({ info() { }, warn() { }, error() { }, signal() { }, ok() { }, debug() { } });
-  // 造一个最小可用的假 market + 触发一次形态提醒
-  const run = (quoteVolume, minQv) => {
-    const st = {
-      symbol: 'QVUSDT', seeded: true, stale: false, quoteVolume, bullCount: 5,
-      series: { '3m': { t: [Date.now()], ms: 180000, done: [true], c: [1] } },
-      levels: null, best: null,
-    };
-    const market = {
-      symbols: new Map([['QVUSDT', st]]),
-      universe: ['QVUSDT'],
-      stats: {},
-    };
-    const eng = new Engine(market, mkLog());
-    eng.cfg = { ...eng.cfg, dualEnabled: true, dualMinQuoteVolume: minQv };
-    // 直接喂一个形态命中，绕过行情
-    eng.evaluateOne = Engine.prototype.evaluateOne;
-    const alerts = [];
-    eng.on('alert', a => alerts.push(a));
-    // 手工走「形态提醒」那段逻辑：用 evaluateOne 太重，这里直接构造 res 调内部路径
-    const res = { dual: { '15m': { bear: { bars: 2 }, bull: null, close: 1, ma7: 1, ema7: 1, candleT: 12345 } } };
-    // 复用 evaluateOne 里的形态分支：直接调用同一段代码不方便，改为断言 cfg 读取正确
-    return { eng, res, alerts };
-  };
+  const MS = 600000; // 10m
+  /** 造 series + ind：difs/deas 是 DIF/DEA 序列 */
+  const mk = (difs, deas) => ({
+    series: { t: difs.map((_, i) => i * MS), ms: MS },
+    ind: {
+      macd: {
+        dif: Float64Array.from(difs),
+        dea: Float64Array.from(deas),
+        hist: Float64Array.from(difs.map((d, i) => 2 * (d - deas[i]))),
+      },
+    },
+  });
+  const OPT = zeroOptions({}, { zeroMaxNear: 0.15, zeroMinHoldBars: 3, zeroLookback: 60 });
 
-  ok('默认门槛为 400 万 USDT', DEFAULT_SIGNAL.dualMinQuoteVolume === 4_000_000,
-    'dualMinQuoteVolume=' + DEFAULT_SIGNAL.dualMinQuoteVolume);
+  // 场景 A：先涨上去（DIF 0.5→1.16），再回踩到 0.05（约为振幅的 4%）→ 应判定「已回踩到位」
+  {
+    const difs = [], deas = [];
+    for (let i = 0; i < 34; i++) { const d = 0.5 + i * 0.02; difs.push(d); deas.push(d - 0.10); }
+    difs.push(0.90, 0.60, 0.30, 0.08, 0.05);
+    deas.push(0.80, 0.55, 0.32, 0.14, 0.09);
+    const { series, ind } = mk(difs, deas);
+    const idx = difs.length - 1;
+    const z = zeroMonitorAt(series, ind, idx, OPT);
+    ok('★ 涨上去后回踩到零轴附近（振幅 4%）→ 判定为 near',
+      !!z && z.phase === 'near',
+      z ? `phase=${z.phase} near=${z.near.toFixed(3)} hold=${z.hold}` : 'null');
+    ok('★ DIF 全程未跌破零轴（不破）', !!z && z.side > 0 && z.hold >= 3, z ? `side=${z.side} hold=${z.hold}` : 'null');
+    ok('该形态在默认筛选下算信号', zeroMatches(z, OPT));
+  }
 
-  // 阈值比较语义：恰好等于应通过，差一点应拦下
-  const gate = (qv, min) => !(min > 0) || (Number(qv) >= min);
-  ok('成交额 = 阈值 → 通过', gate(4_000_000, 4_000_000) === true);
-  ok('成交额 = 阈值 - 1 → 拦下', gate(3_999_999, 4_000_000) === false);
-  ok('成交额 > 阈值 → 通过', gate(50_000_000, 4_000_000) === true);
-  ok('门槛填 0 → 不限制（全部通过）', gate(1, 0) === true);
-  ok('成交额缺失（undefined）→ 拦下，不放行未知标的', gate(undefined, 4_000_000) === false);
+  // 场景 B：刚上穿零轴（只在零轴上方 2 根，不足 minHold=3）→ 不应算「回踩」
+  {
+    const difs = [], deas = [];
+    for (let i = 0; i < 34; i++) { const d = -1.0 + i * 0.02; difs.push(d); deas.push(d + 0.10); }
+    difs.push(-0.10, 0.02, 0.04);   // 刚翻到零轴上方
+    deas.push(-0.05, 0.03, 0.02);
+    const { series, ind } = mk(difs, deas);
+    const idx = difs.length - 1;
+    const z = zeroMonitorAt(series, ind, idx, OPT);
+    ok('★ 刚上穿零轴（该侧只 2 根）→ 不算回踩，phase 不是 near',
+      !!z && z.phase !== 'near',
+      z ? `phase=${z.phase} hold=${z.hold} near=${z.near.toFixed(3)}` : 'null');
+    // 关键回归：振幅分母只取「本轮同侧」。
+    // 若跨到零轴另一侧取最大 |DIF|，这里会算出 near≈0.04 假装已贴到零轴；
+    // 只看本轮时本轮最大 |DIF| 就是当前值，near=1，本身就否掉了。
+    ok('★ 振幅只算本轮同侧：刚上穿时 near=1，不再依赖 hold 兜底',
+      !!z && z.near > 0.9,
+      z ? `near=${z.near.toFixed(3)}（本轮最大 |DIF|=${z.runMax}）` : 'null');
+  }
+
+  // 场景 C：回踩不够深（只回到振幅的 50%）→ 不算
+  {
+    const difs = [], deas = [];
+    for (let i = 0; i < 34; i++) { const d = 0.5 + i * 0.02; difs.push(d); deas.push(d - 0.10); }
+    difs.push(0.95, 0.80, 0.70, 0.62, 0.58);
+    deas.push(0.85, 0.78, 0.70, 0.64, 0.60);
+    const { series, ind } = mk(difs, deas);
+    const idx = difs.length - 1;
+    const z = zeroMonitorAt(series, ind, idx, OPT);
+    ok('回踩不够深（仍在振幅 50%）→ 不算 near',
+      !!z && z.phase !== 'near',
+      z ? `phase=${z.phase} near=${z.near.toFixed(3)} > 0.15` : 'null');
+  }
+
+  // 场景 D：空头侧（上穿零轴不穿）
+  {
+    const difs = [], deas = [];
+    for (let i = 0; i < 34; i++) { const d = -0.5 - i * 0.02; difs.push(d); deas.push(d + 0.10); }
+    difs.push(-0.90, -0.60, -0.30, -0.08, -0.05);
+    deas.push(-0.80, -0.55, -0.32, -0.14, -0.09);
+    const { series, ind } = mk(difs, deas);
+    const idx = difs.length - 1;
+    const z = zeroMonitorAt(series, ind, idx, OPT);
+    ok('★ 零轴下方反弹到附近（上穿不穿）→ near 且 side<0',
+      !!z && z.phase === 'near' && z.side < 0,
+      z ? `phase=${z.phase} side=${z.side} near=${z.near.toFixed(3)}` : 'null');
+    ok('方向筛选：side=long 时这条空头形态被排除',
+      !zeroMatches(z, { ...OPT, side: 'long' }) && zeroMatches(z, { ...OPT, side: 'short' }));
+  }
+
+  // 场景 E：phase 默认只认 near（watch 不算信号）
+  {
+    const difs = [], deas = [];
+    for (let i = 0; i < 34; i++) { const d = 0.5 + i * 0.02; difs.push(d); deas.push(d - 0.10); }
+    difs.push(1.10, 1.00);   // 还在高位，没回踩
+    deas.push(1.05, 1.02);
+    const { series, ind } = mk(difs, deas);
+    const z = zeroMonitorAt(series, ind, difs.length - 1, OPT);
+    ok('未回踩时不算信号（phase 非 near）',
+      !!z && z.phase !== 'near', z ? `phase=${z.phase} near=${z.near.toFixed(3)}` : 'null');
+    // 金叉/死叉（DIF 与 DEA 的交叉）已从零轴监控移除：参数与返回字段都不再有 cross
+    ok('★ 已移除金叉/死叉：zeroOptions 不含 cross / phase 参数',
+      OPT.cross === undefined && OPT.phase === undefined,
+      `cross=${OPT.cross} phase=${OPT.phase}`);
+    ok('★ 已移除金叉/死叉：结果对象不含 cross / crossAt',
+      !!z && z.cross === undefined && z.crossAt === undefined,
+      z ? `cross=${z.cross} crossAt=${z.crossAt}` : 'null');
+    ok('zeroMatches 只认「已回踩到位」，watch 不算信号',
+      zeroMatches({ ...z, phase: 'watch' }, OPT) === false
+      && zeroMatches({ ...z, phase: 'near' }, OPT) === true,
+      'watch=false / near=true');
+  }
+  // 参数
+  ok('默认靠近程度上限 = 0.20（20% 振幅）', DEFAULT_SIGNAL.zeroMaxNear === 0.20, 'zeroMaxNear=' + DEFAULT_SIGNAL.zeroMaxNear);
+  ok('默认要求该侧先持续 3 根', DEFAULT_SIGNAL.zeroMinHoldBars === 3, 'zeroMinHoldBars=' + DEFAULT_SIGNAL.zeroMinHoldBars);
+  ok('默认不要求已拐头（碰到就算）', DEFAULT_SIGNAL.zeroRequirePull === false, 'zeroRequirePull=' + DEFAULT_SIGNAL.zeroRequirePull);
+  ok('零轴监控级别为 10m/15m/30m/1h/2h/3h/4h/6h/12h/1d',
+    JSON.stringify(ZERO_LEVEL_KEYS) === JSON.stringify(['10m', '15m', '30m', '1h', '2h', '3h', '4h', '6h', '12h', '1d']),
+    ZERO_LEVEL_KEYS.join(','));
+  ok('minQual 上限跟随级别数',
+    zeroOptions({ minQual: 99 }, {}).minQual === ZERO_LEVEL_KEYS.length,
+    'minQual 上限=' + zeroOptions({ minQual: 99 }, {}).minQual);
+
+  // —— 双级别配对 ——
+  ok('配对为 10m-1h / 15m-2h / 30m-3h / 1h-6h / 2h-12h / 4h-1d 共 6 组',
+    ZERO_PAIRS.length === 6
+    && JSON.stringify(ZERO_PAIRS.map(p => p.sub + '-' + p.main))
+       === JSON.stringify(['10m-1h', '15m-2h', '30m-3h', '1h-6h', '2h-12h', '4h-1d']),
+    ZERO_PAIRS.map(p => p.sub + '-' + p.main).join(' '));
+  ok('每组的级别都在 ZERO_LEVEL_KEYS 里',
+    ZERO_PAIRS.every(p => ZERO_LEVEL_KEYS.includes(p.sub) && ZERO_LEVEL_KEYS.includes(p.main)));
+
+  // —— 主级别条件：金叉/死叉 + 零轴同侧时无背驰（不再要求 DIF 同侧） ——
+  {
+    // 次级别：已靠近零轴
+    const subUp = { phase: 'near', side: 1, near: 0.05, hold: 20 };
+    const subDn = { phase: 'near', side: -1, near: 0.04, hold: 25 };
+    // 主级别：dif/dea 决定金叉死叉；零轴位置看 dif 符号；crossHold 是金叉持续根数
+    const goldenAbove = { dif: 0.50, dea: 0.40, crossSide: 1, crossHold: 30, near: 0.9, hold: 40, side: 1 };
+    const goldenBelow = { dif: -0.20, dea: -0.30, crossSide: 1, crossHold: 8, near: 0.8, hold: 9, side: -1 };
+    const deathAbove = { dif: 0.40, dea: 0.50, crossSide: -1, crossHold: 12, near: 0.9, hold: 40, side: 1 };
+    const deathBelow = { dif: -0.40, dea: -0.30, crossSide: -1, crossHold: 30, near: 0.7, hold: 40, side: -1 };
+
+    const h1 = zeroPairHit(subUp, goldenAbove, 1, null);
+    ok('★ 主级别金叉（零轴上方）+ 次级别靠近不下穿 → 多头成立',
+      !!h1 && h1.dir === 'long',
+      h1 ? `mainCross=${h1.mainCross} 持续 ${h1.mainHold} 根` : 'null');
+
+    const h2 = zeroPairHit(subUp, goldenBelow, 1, null);
+    ok('★ 主级别金叉在**零轴下方**也算数（新口径的关键）',
+      !!h2 && h2.dir === 'long' && h2.mainAboveZero === false,
+      h2 ? `DIF=${h2.mainDif} 在零轴下方，金叉 ${h2.mainHold} 根` : 'null');
+
+    ok('★ 主级别是死叉 → 多头不成立',
+      zeroPairHit(subUp, deathAbove, 1, null) === null);
+
+    ok('★ 零轴上方 + 顶背驰酝酿中 → 多头不成立',
+      zeroPairHit(subUp, goldenAbove, 1, { status: 'pending', dir: 'top' }) === null);
+
+    ok('零轴上方但背驰方向是底背驰（与做多无关）→ 仍成立',
+      !!zeroPairHit(subUp, goldenAbove, 1, { status: 'pending', dir: 'bottom' }));
+
+    ok('主级别在零轴下方时不做背驰检查（顶背驰也放行）',
+      !!zeroPairHit(subUp, goldenBelow, 1, { status: 'pending', dir: 'top' }));
+
+    ok('金叉持续根数不足 → 不成立',
+      zeroPairHit(subUp, Object.assign({}, goldenAbove, { crossHold: 0 }), 1, null) === null);
+
+    // 空头镜像
+    const h3 = zeroPairHit(subDn, deathBelow, 1, null);
+    ok('★ 主级别死叉 + 次级别反弹不上穿 → 空头成立',
+      !!h3 && h3.dir === 'short',
+      h3 ? `mainCross=${h3.mainCross}` : 'null');
+
+    ok('★ 零轴下方 + 底背驰酝酿中 → 空头不成立',
+      zeroPairHit(subDn, deathBelow, 1, { status: 'pending', dir: 'bottom' }) === null);
+
+    ok('主级别是金叉 → 空头不成立',
+      zeroPairHit(subDn, goldenAbove, 1, null) === null);
+
+    ok('次级别没靠近零轴 → 不成立',
+      zeroPairHit({ phase: 'idle', side: 1, near: 0.9, hold: 20 }, goldenAbove, 1, null) === null);
+  }
+  // 次级别不在 near → 不成立
+  {
+    const h = zeroPairHit({ phase: 'idle', side: 1, near: 0.9, hold: 20 }, { phase: 'idle', side: 1, near: 0.9, hold: 30, dif: 0.5 }, 3);
+    ok('次级别没靠近零轴 → 不成立', h === null);
+  }
+  // 主次不同侧 → 不成立
+  {
+    const h = zeroPairHit({ phase: 'near', side: 1, near: 0.05, hold: 20 }, { phase: 'idle', side: -1, near: 0.9, hold: 30, dif: -0.5 }, 3);
+    ok('★ 主级别与次级别不同侧（一上一下）→ 不成立', h === null);
+  }
+  // 主级别刚翻转 → 不成立
+  {
+    const h = zeroPairHit({ phase: 'near', side: 1, near: 0.05, hold: 20 }, { phase: 'idle', side: 1, near: 0.9, hold: 2, dif: 0.5 }, 3);
+    ok('主级别刚翻转到该侧（只 2 根）→ 不成立', h === null);
+  }
+
+  // —— 左侧「大级别推动K线 + 回调不破」结构 ——
+  {
+    const mkS = (arr) => ({
+      t: arr.map((_, i) => i * 60000),
+      o: arr.map(x => x[0]), h: arr.map(x => x[1]),
+      l: arr.map(x => x[2]), c: arr.map(x => x[3]),
+    });
+    // 底噪用「十字星」（实体 0），这样回调K线不会被误当成大K线
+    const flat = Array.from({ length: 24 }, () => [1.00, 1.0005, 0.9998, 1.00]);
+    // 多：大阳线（实体底 1.00）+ 两根小阳回调，收盘都 > 1.00
+    const up = flat.concat([
+      [1.00, 1.10, 0.99, 1.09],
+      [1.020, 1.026, 1.012, 1.021],
+      [1.018, 1.024, 1.010, 1.020],
+    ]);
+    const sd = mkS(up);
+    const hitUp = bigCandleSupport(sd, up.length - 1, 1, { bigLookback: 20, bigMult: 1.5 });
+    ok('★ 大阳线 + 回调不破实体底 → 结构成立',
+      !!hitUp && Math.abs(hitUp.line - 1.00) < 1e-9,
+      hitUp ? `实体放大 ${hitUp.mult.toFixed(1)} 倍，不破线=${hitUp.line}` : 'null');
+    ok('大K线的实体确实远超平均实体', !!hitUp && hitUp.mult > 5, hitUp ? hitUp.mult.toFixed(1) + ' 倍' : '—');
+
+    // 回调收盘跌破实体底 → 结构失效
+    const broken = up.slice();
+    broken[broken.length - 1] = [1.018, 1.024, 0.980, 0.990];
+    ok('★ 回调收盘跌破实体底 → 结构失效',
+      bigCandleSupport(mkS(broken), broken.length - 1, 1, { bigLookback: 20, bigMult: 1.5 }) === null);
+
+    // 空头镜像：大阴线 + 反弹不破实体顶
+    const down = flat.concat([
+      [1.00, 1.01, 0.90, 0.91],
+      [0.980, 0.990, 0.976, 0.979],
+      [0.979, 0.985, 0.974, 0.977],
+    ]);
+    const hitDn = bigCandleSupport(mkS(down), down.length - 1, -1, { bigLookback: 20, bigMult: 1.5 });
+    ok('★ 大阴线 + 反弹不破实体顶 → 空头结构成立',
+      !!hitDn && Math.abs(hitDn.line - 1.00) < 1e-9,
+      hitDn ? `不破线=${hitDn.line}` : 'null');
+
+    // 方向不符：阳线不认作空头结构
+    ok('方向不符（只有大阳线，不认作空头结构）',
+      bigCandleSupport(sd, up.length - 1, -1, { bigLookback: 20, bigMult: 1.5 }) === null);
+
+    // 没有大K线
+    const none = flat;
+    ok('全是小实体 → 找不到推动K线',
+      bigCandleSupport(mkS(none), none.length - 1, 1, { bigLookback: 20, bigMult: 1.5 }) === null);
+
+    // 大K线在窗口之外
+    const far = none.slice();
+    far[2] = [1.00, 1.10, 0.99, 1.09];
+    ok('大K线超出回看窗口 → 不认',
+      bigCandleSupport(mkS(far), far.length - 1, 1, { bigLookback: 20, bigMult: 1.5 }) === null);
+
+    // basis=low 用最低价
+    const hitLow = bigCandleSupport(sd, up.length - 1, 1, { bigLookback: 20, bigMult: 1.5, bigBasis: 'low' });
+    ok('basis=low 时以最低价作不破线', !!hitLow && Math.abs(hitLow.line - 0.99) < 1e-9,
+      hitLow ? '线=' + hitLow.line : 'null');
+
+    ok('默认开启结构过滤（requireBig）', zeroOptions({}, DEFAULT_SIGNAL).requireBig === true);
+  }
+}
+
+/* ============ 18. 单K推动 + 回调不破 ============ */
+section('18. 单K推动 + 回调不破（只扫涨幅榜前 N）');
+{
+  const opt = singleKOptions({}, { singleKMinGainPct: 2, singleKMult: 1.5, singleKLookback: 20, singleKMaxAfter: 12, singleKTopN: 50 });
+  const mkS = rows => ({
+    t: rows.map((_, i) => i * 900000), ms: 900000,
+    o: rows.map(r => r[0]), h: rows.map(r => r[1]),
+    l: rows.map(r => r[2]), c: rows.map(r => r[3]),
+  });
+  // 20 根十字星 → 大阳线(+5%) → 3 根浅回调
+  const base = Array.from({ length: 20 }, () => [1.00, 1.004, 0.998, 1.001]);
+  const up = base.concat([
+    [1.00, 1.06, 0.995, 1.05],
+    [1.045, 1.048, 1.030, 1.032],
+    [1.032, 1.036, 1.020, 1.024],
+    [1.024, 1.028, 1.012, 1.015],
+  ]);
+  const hit = singleKAt(mkS(up), up.length - 1, opt);
+  ok('★ 大阳线 + 回调不破 → 命中',
+    !!hit && Math.abs(hit.open - 1.00) < 1e-9,
+    hit ? '涨幅 ' + hit.bodyPct.toFixed(1) + '%（放大 ' + hit.mult.toFixed(1) + ' 倍），回踩 ' + hit.retracePct.toFixed(1) + '%，回调 ' + hit.barsAfter + ' 根' : 'null');
+  ok('★ 回踩幅度小于单K涨幅（策略核心条件）',
+    !!hit && hit.retracePct < hit.bodyPct,
+    hit ? hit.retracePct.toFixed(2) + '% < ' + hit.bodyPct.toFixed(2) + '%' : '—');
+  ok('不破线 = 大阳线最低价', !!hit && Math.abs(hit.low - 0.995) < 1e-9, hit ? String(hit.low) : '—');
+
+  // 回调收盘跌破大阳线最低价
+  const broke = up.slice();
+  broke[broke.length - 1] = [1.024, 1.026, 0.985, 0.990];
+  ok('★ 回调收盘跌破大阳线最低价 → 拒绝',
+    singleKAt(mkS(broke), broke.length - 1, opt) === null);
+
+  // 回踩幅度 >= 涨幅（收在 0.997：没破 0.995，但回踩 5.05% > 涨幅 5%）
+  const deep = up.slice();
+  deep[deep.length - 1] = [1.024, 1.026, 0.996, 0.997];
+  ok('★ 回踩幅度超过单K涨幅 → 拒绝',
+    singleKAt(mkS(deep), deep.length - 1, opt) === null);
+
+
+  // —— 做空（反向镜像）：大阴线 + 反抽不破 ——
+  {
+    const dnFlat = Array.from({ length: 24 }, () => [1.00, 1.004, 0.996, 0.999]);
+    const dn = dnFlat.concat([
+      [1.00, 1.005, 0.94, 0.95],      // 大阴线 −5%，最高价 1.005
+      [0.955, 0.970, 0.952, 0.968],   // 反抽
+      [0.968, 0.985, 0.964, 0.982],
+      [0.982, 0.990, 0.978, 0.985],   // 收 0.985 < 最高价 1.005
+    ]);
+    const sdn = mkS(dn);
+    const shortHit = singleKAt(sdn, dn.length - 1, opt, -1);
+    ok('★ 大阴线 + 反抽不破最高价 → 空头命中',
+      !!shortHit && shortHit.dir === 'short' && Math.abs(shortHit.line - 1.005) < 1e-9,
+      shortHit ? '跌 ' + shortHit.bodyPct.toFixed(1) + '%，反抽 ' + shortHit.retracePct.toFixed(1) + '%，不破线=' + shortHit.line : 'null');
+    ok('★ 空头：反抽幅度小于单K跌幅',
+      !!shortHit && shortHit.retracePct < shortHit.bodyPct,
+      shortHit ? shortHit.retracePct.toFixed(2) + '% < ' + shortHit.bodyPct.toFixed(2) + '%' : '—');
+
+    // 反抽收盘涨破最高价 → 破位
+    const upBreak = dn.slice();
+    upBreak[upBreak.length - 1] = [0.982, 1.010, 0.980, 1.008];
+    ok('★ 反抽收盘涨破最高价 → 拒绝',
+      singleKAt(mkS(upBreak), upBreak.length - 1, opt, -1) === null);
+
+    // 反抽幅度 >= 跌幅
+    const upDeep = dn.slice();
+    upDeep[upDeep.length - 1] = [0.982, 1.004, 0.980, 1.002];
+    ok('★ 反抽幅度超过单K跌幅 → 拒绝',
+      singleKAt(mkS(upDeep), upDeep.length - 1, opt, -1) === null);
+
+    // 方向不符：大阳线不能当空头、大阴线不能当多头
+    ok('方向不符（大阳线不认作空头）', singleKAt(mkS(up), up.length - 1, opt, -1) === null);
+    ok('方向不符（大阴线不认作多头）', singleKAt(mkS(dn), dn.length - 1, opt, 1) === null);
+
+    // 默认方向是做多（不传 dir）
+    ok('不传方向参数时默认按做多判定', !!singleKAt(mkS(up), up.length - 1, opt));
+  }
+
+
+  // 已经收复失地（收盘回到大阳线收盘之上）
+  const back = up.slice();
+  back[back.length - 1] = [1.024, 1.06, 1.022, 1.055];
+  ok('已经收复（收盘回到大阳线收盘之上）→ 拒绝',
+    singleKAt(mkS(back), back.length - 1, opt) === null);
+
+  // 涨幅不足
+  const small = Array.from({ length: 20 }, () => [1.00, 1.004, 0.998, 1.001]);
+  small.push([1.00, 1.012, 0.998, 1.011]);
+  small.push([1.008, 1.010, 1.002, 1.004]);
+  ok('单K涨幅不足 2% → 拒绝', singleKAt(mkS(small), small.length - 1, opt) === null);
+
+  // 回调根数超过上限
+  const late = base.concat([[1.00, 1.06, 0.995, 1.05]]);
+  for (let i = 0; i < 14; i++) late.push([1.045 - i * 0.001, 1.046 - i * 0.001, 1.030 - i * 0.001, 1.032 - i * 0.001]);
+  ok('回调根数超过上限 → 拒绝', singleKAt(mkS(late), late.length - 1, opt) === null);
+
+  // 参数
+  ok('默认监控涨幅榜前 200', DEFAULT_SIGNAL.singleKTopN === 200, 'singleKTopN=' + DEFAULT_SIGNAL.singleKTopN);
+  ok('默认单K涨幅下限 2%', DEFAULT_SIGNAL.singleKMinGainPct === 2, 'singleKMinGainPct=' + DEFAULT_SIGNAL.singleKMinGainPct);
+  ok('默认实体倍数 1.5', DEFAULT_SIGNAL.singleKMult === 1.5, 'singleKMult=' + DEFAULT_SIGNAL.singleKMult);
+  ok('扫描级别为 15m/30m/1h/2h/3h/4h/6h',
+    JSON.stringify(SINGLE_K_LEVELS) === JSON.stringify(['15m', '30m', '1h', '2h', '3h', '4h', '6h']),
+    SINGLE_K_LEVELS.join(','));
 }
 
 /* ============ 汇总 ============ */
