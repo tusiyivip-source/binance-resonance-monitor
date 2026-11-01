@@ -1,4 +1,8 @@
-/** 诊断在线版：捕获控制台、异常、网络失败 */
+/**
+ * 在线版体检：打开指定 URL，捕获控制台/异常/网络失败，并报告页面是否真的渲染出内容。
+ *   node tools/check-online.mjs [url] [等待毫秒，默认 25000]
+ * 典型用途：线上白屏时一眼看出「脚本没加载 / 模块 404 / JS 报错 / 币安连不上」。
+ */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -50,7 +54,7 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
   console.log('  打开', URL_);
   await send('Page.navigate', { url: URL_ });
-  await sleep(25000);
+  await sleep(Number(process.argv[3] || 25000));
 
   const state = await ev(`({
     title: document.title,
