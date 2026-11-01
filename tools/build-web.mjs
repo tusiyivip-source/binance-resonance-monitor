@@ -128,9 +128,32 @@ const bootstrap = `<script>
 
 const first = scripts[0];
 if (!html.includes(first)) { console.log('✗ 找不到脚本标签锚点，index.html 结构可能已变'); process.exit(1); }
-html = html.replace(scripts.join('\n'), bootstrap);
-// 万一三个标签不连续，逐个兜底
-for (const s of scripts) html = html.replace(s + '\n', '').replace(s, '');
+
+/* 整体替换成引导器。
+ * 注意：不能用 scripts.join('\n') 做字面匹配 —— public/index.html 是 **CRLF** 换行，
+ * 三个标签之间实际是 \r\n，字面串永远匹配不上；而下面「逐个兜底删除」却照样生效，
+ * 结果就是三个 script 全被删掉、引导器也没插进去，线上页面空白、一个 JS 都不加载。
+ * 这里用带 \r? 的正则，并且替换后做严格校验。 */
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const blockRe = new RegExp(scripts.map(esc).join('\\s*\\r?\\n\\s*'));
+if (!blockRe.test(html)) {
+  console.log('✗ 三个 script 标签不连续，index.html 结构可能已变');
+  process.exit(1);
+}
+html = html.replace(blockRe, bootstrap);
+// 兜底：若还有单独出现的残留标签，删掉（此时引导器已经就位）
+for (const s of scripts) html = html.split(s).join('');
+
+/* 硬校验：引导器必须在、原来的三个直挂标签必须已消失。
+ * 少了这道校验，脚本被误删也不会有任何提示（线上直接白屏）。 */
+if (!html.includes("import('./src/browser/boot.js')")) {
+  console.log('✗ 引导器没有写进 index.html —— 线上会白屏');
+  process.exit(1);
+}
+if (scripts.some(s => html.includes(s))) {
+  console.log('✗ index.html 里还残留旧的 <script> 直挂标签');
+  process.exit(1);
+}
 
 // 顶部插入「在线版」说明条
 const note = `<div id="web-mode-note" style="display:none;padding:6px 14px;font-size:12px;
