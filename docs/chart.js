@@ -229,10 +229,58 @@ function buildCard() {
       <span class="st"></span>
       <span class="sp"></span>
       <span class="px"></span>
+      <button class="pinbtn" type="button" title="固定到最前面（后续更新不会把它挤下去）">📌</button>
     </div>
     <div class="zero-meta" hidden></div>
     <div class="cchart"></div>`;
+  // 置顶按钮：点一次固定、再点一次取消
+  card.querySelector('.pinbtn').addEventListener('click', e => {
+    e.stopPropagation();
+    const id = card.dataset.pinId;
+    if (!id) return;
+    togglePin(id);
+    card.classList.toggle('pinned', isPinned(id));
+    const view = card._view || (card.closest('.chartgrid') ? null : null);
+    if (typeof rerenderCurrentView === 'function') rerenderCurrentView();
+  });
   return card;
+}
+
+/* ---------------- 置顶（固定） ---------------- */
+const PIN_KEY = 'dsh.pinnedCards';
+let PINNED = new Set();
+try {
+  const raw = localStorage.getItem(PIN_KEY);
+  if (raw) PINNED = new Set(JSON.parse(raw));
+} catch { /* localStorage 不可用时退化为内存 */ }
+
+function isPinned(id) { return PINNED.has(id); }
+function togglePin(id) {
+  if (PINNED.has(id)) PINNED.delete(id); else PINNED.add(id);
+  try { localStorage.setItem(PIN_KEY, JSON.stringify([...PINNED])); } catch { /* 忽略 */ }
+}
+/** 每张卡片的稳定身份（币种 + 具体形态） */
+function pinIdOf(it) {
+  if (it.kind === 'pair' && it.pair) return 'p|' + it.symbol + '|' + it.pair.sub + '-' + it.pair.main;
+  if (it.kind === 'single' && it.single) return 's|' + it.symbol + '|' + it.single.level + '|' + it.side;
+  if (it.kind === 'singlek') return 's|' + it.symbol + '|' + it.level + '|' + it.side;
+  return (it.kind || 'x') + '|' + it.symbol + '|' + (it.key || '');
+}
+/** 置顶的排到最前，其余保持原顺序（稳定） */
+function sortPinnedFirst(items) {
+  if (!PINNED.size) return items;
+  const on = [], off = [];
+  for (const it of items) (isPinned(pinIdOf(it)) ? on : off).push(it);
+  return on.length ? on.concat(off) : items;
+}
+/** 卡片建好后同步 pinId 与高亮状态 */
+function syncPinBadge(card, it) {
+  const id = pinIdOf(it);
+  card.dataset.pinId = id;
+  card._view = card._view;
+  card.classList.toggle('pinned', isPinned(id));
+  const btn = card.querySelector('.pinbtn');
+  if (btn) btn.title = isPinned(id) ? '已固定（点一下取消）' : '固定到最前面';
 }
 
 function initChart(card, minutes) {
@@ -327,12 +375,13 @@ function ensureCards(view, items) {
     cur++;
   }
   view.entries.forEach((e, i) => {
+    if (items[i]) syncPinBadge(e.card, items[i]);
     const minutes = items[i].minutes ?? 15;
     if (e.minutes === minutes) return;
     e.minutes = minutes;
     e.chart.applyOptions({ timeScale: { tickMarkFormatter: t => fmtCandleTime(t * 1000, minutes) } });
   });
-  return view.entries;
+  // 关键：置顶会改变 items 顺序，但卡片 DOM 还留在原位。\n  // 按 entries 顺序重新 append，把 DOM 顺序也排好（appendChild 会移动已有节点）。\n  if (view.entries.length) view.entries.forEach(e => grid.appendChild(e.card));\n  return view.entries;
 }
 
 /* ---------------- 绘制 ---------------- */
@@ -374,6 +423,8 @@ function paintCard(view, i, it) {
     else if (roles.includes('big')) cls.push('role-big');
   }
   if (card.classList.contains('zoomed')) cls.push('zoomed');
+  // 这里用 className 整体覆盖，必须把「已固定」的高亮补回去
+  if (typeof isPinned === 'function' && isPinned(pinIdOf(it))) cls.push('pinned');
   card.className = cls.join(' ');
 
   const meta = card.querySelector('.zero-meta');
@@ -619,6 +670,17 @@ document.addEventListener('visibilitychange', () => {
  */
 /** 单K策略的平铺 K 线墙：每个命中 (币种 × 级别) 一张图 */
 /** 配对策略的平铺K线：每条信号出一张次级别图，标出回踩起点 */
+/** 点了图钉后立刻按新的置顶顺序重排（不重新请求数据） */
+function rerenderCurrentView() {
+  const view = VIEWS[activeView] || (activeView === "matrix" ? VIEWS.pair : null);
+  if (!view || !view.grid || !view.items) return;
+  view.items = sortPinnedFirst(view.items);
+  ensureCards(view, view.items);
+  paintView(view);
+  applyCols(view);
+}
+
+
 async function refreshPairView() {
   const view = VIEWS.pair;
   if (!view.grid) return;
@@ -629,7 +691,7 @@ async function refreshPairView() {
   try {
     const d = await fetchChart(view, `/api/pairchart?bars=${bars}&limit=${limit}&side=${side}`);
     if (!d) return;
-    view.items = d.items ?? [];
+    view.items = sortPinnedFirst(d.items ?? []);
     ensureCards(view, view.items);
     paintView(view);
     applyCols(view);
@@ -657,7 +719,7 @@ async function refreshSingleView() {
     const zeroQ = document.querySelector('#single-zero')?.value || 'all';
     const d = await fetchChart(view, `/api/singlekchart?bars=${bars}&limit=${limit}&zero=${zeroQ}`);
     if (!d) return;
-    view.items = d.items ?? [];
+    view.items = sortPinnedFirst(d.items ?? []);
     ensureCards(view, view.items);
     paintView(view);
     applyCols(view);
@@ -719,7 +781,7 @@ async function refreshAlertView() {
   try {
     const d = await fetchChart(view, `/api/alertchart?bars=${bars}&limit=${limit}`);
     if (!d) return;
-    view.items = d.items ?? [];
+    view.items = sortPinnedFirst(d.items ?? []);
     ensureCards(view, view.items);
     paintView(view);
     applyCols(view);

@@ -519,3 +519,14 @@ body.singlemode #singlechartgrid::-webkit-scrollbar-thumb:hover{background:#3b51
 #pairchartgrid::-webkit-scrollbar-track{background:#0a1018}
 #pairchartgrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
 #pairtablewrap{display:flex;flex:1;min-width:0;flex-direction:column;min-height:0}
+
+/* ---------- 卡片「固定到最前」按钮 ---------- */
+.cchead .pinbtn{
+  margin-left:6px;flex:0 0 auto;background:transparent;border:1px solid transparent;
+  border-radius:4px;cursor:pointer;font-size:12px;line-height:1;padding:1px 4px;
+  opacity:.28;transition:opacity .15s,border-color .15s,background .15s;
+}
+.chartcard:hover .cchead .pinbtn{opacity:.75}
+.cchead .pinbtn:hover{opacity:1;border-color:#33506e;background:#132232}
+.chartcard.pinned{border-color:#f0b90b;box-shadow:0 0 0 1px rgba(240,185,11,.35)}
+.chartcard.pinned .cchead .pinbtn{opacity:1;background:#3a2f12;border-color:#f0b90b}
