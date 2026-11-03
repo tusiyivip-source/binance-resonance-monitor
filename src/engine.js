@@ -657,6 +657,52 @@ export class Engine extends Emitter {
   zeroAxis(input = {}) { return this.zeroScan(input).snapshot; }
 
   /**
+   * 配对全景屏的数据：**已经推送过（已提醒）**的全部配对信号，去重后出图。
+   *
+   * 与 pairZeroCharts 的区别：
+   *   pairZeroCharts —— 当前时刻还在成立的信号（实时状态）
+   *   pairGridData   —— 报警历史里出现过的信号（已经提醒过的那批）
+   * 只读，不产生任何新报警。
+   */
+  pairGridData(bars = 120, limit = 200) {
+    const now = Date.now();
+    const seen = new Map();          // 去重：同一 (币种|配对|方向) 只留最新一条
+    for (const a of this.alerts) {
+      if (a.kind !== 'pairzero') continue;
+      const key = a.symbol + '|' + a.pair + '|' + a.side;
+      const prev = seen.get(key);
+      if (!prev || (a.ts || 0) > (prev.ts || 0)) seen.set(key, a);
+    }
+    const list = [...seen.values()].sort((x, y) => (y.ts || 0) - (x.ts || 0));
+    const items = [];
+    const cap = Math.max(1, Math.min(400, Number(limit) || 200));
+    for (const a of list) {
+      if (items.length >= cap) break;
+      const st = this.market.symbols.get(a.symbol);
+      if (!st) continue;
+      const lvl = this.levelPayload(st, a.sub, bars);
+      if (!lvl) continue;
+      items.push({
+        ...lvl, symbol: a.symbol, kind: 'pair', side: a.side,
+        pair: {
+          sub: a.sub, main: a.main, pair: a.pair,
+          subLabel: a.subLabel, mainLabel: a.mainLabel,
+          dir: a.side, rank: a.rank,
+          mainDif: a.mainDif, mainHold: a.mainHold,
+          subDif: a.subDif, subHold: a.subHold,
+          subPullBars: a.subPullBars, subPeak: a.subPeak, subPeakT: null, subAt: a.candleT,
+          price: a.price, changePct: a.changePct,
+          alertedAt: a.ts,
+        },
+      });
+    }
+    return {
+      generatedAt: now, total: list.length, shown: items.length,
+      limit: cap, bars, items,
+    };
+  }
+
+  /**
    * 配对策略的**平铺 K 线**：每条配对信号出一张**次级别**K线图，
    * 图上标出「回踩起点」（本轮 DIF 极值那根）。
    */

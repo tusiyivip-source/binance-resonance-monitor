@@ -192,6 +192,11 @@ function routeApi(pathname, search) {
     }
     case '/api/zeroaxis': return { body: safe(() => engine.zeroAxis(Object.fromEntries(q)), { rows: [], symbols: [], levels: [] }) };
     case '/api/singlek': return { body: safe(() => engine.singleKScan(Object.fromEntries(q)), { items: [], total: 0, levels: [] }) };
+    case '/api/pairgrid': {
+      const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 120));
+      const limit = Math.max(1, Math.min(400, Number(q.get('limit')) || 200));
+      return { body: safe(() => engine.pairGridData(bars, limit), { items: [], total: 0 }) };
+    }
     case '/api/pairchart': {
       const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 150));
       const limit = Math.max(1, Math.min(60, Number(q.get('limit')) || 24));

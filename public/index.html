@@ -84,6 +84,7 @@
       <button id="single-refresh" class="vt mini" title="立即刷新">↻</button>
       <span id="single-live" class="chartlive"></span>
     </span>
+    <button id="tab-pgrid" class="vt">▦ 配对全景</button>
     <button id="tab-alert" class="vt">🔔 报警级别K线</button>
     <span class="vtsep"></span>
     <span id="zero-symbar" style="display:none">
@@ -110,6 +111,21 @@
       </select>
       <button id="zero-refresh" class="vt mini" title="立即刷新">↻</button>
       <span id="pair-live" class="chartlive"></span>
+    </span>
+    <span id="pg-symbar" style="display:none">
+      <div id="pgseg-side" class="nnseg">
+        <button class="nnbtn on" data-side="all">全部</button>
+        <button class="nnbtn" data-side="long">只看多</button>
+        <button class="nnbtn" data-side="short">只看空</button>
+      </div>
+      <select id="pg-limit" class="vtsel" title="显示多少个面板">
+        <option value="40">40 个</option>
+        <option value="80">80 个</option>
+        <option value="200" selected>全部已提醒</option>
+      </select>
+      <button id="pg-reset" class="vt mini" title="恢复被 ✕ 关掉的面板">↺</button>
+      <button id="pg-refresh" class="vt mini" title="立即刷新">↻</button>
+      <span id="pg-live" class="chartlive"></span>
     </span>
     <span id="chart-symbar" style="display:none">
       <span id="chart-sym" class="chartsym">—</span>
@@ -182,6 +198,11 @@
         <tbody id="pairbody"></tbody>
       </table>
       </div>
+    </div>
+    <!-- 配对全景：独立的只读多图平铺屏（不参与报警） -->
+    <div id="view-pgrid">
+      <div id="pggrid"></div>
+      <div id="pg-empty" class="empty" style="display:none">当前没有配对信号。</div>
     </div>
     <!-- 单K推动 + 回调不破（独立策略，只扫涨幅榜前 50）——默认平铺 K 线 -->
     <div id="view-single">
@@ -439,5 +460,6 @@
 <script src="/app.js"></script>
 <script src="/chart.js"></script>
 <script src="/pair.js"></script>
+<script src="/pgrid.js"></script>
 </body>
 </html>

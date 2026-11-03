@@ -56,24 +56,32 @@ function setView(mode) {
   document.body.classList.toggle('zerochartmode', mode === 'zero');
   document.body.classList.toggle('zeromonitor', mode === 'zero' || mode === 'matrix' || isPair);
   document.body.classList.toggle('singlemode', mode === 'single');
+  document.body.classList.toggle('pgridmode', mode === 'pgrid');
   document.body.classList.toggle('singlechartmode', mode === 'single');
   document.querySelector('#tab-zero').classList.toggle('on', mode === 'matrix' || mode === 'zero' || isPair);
   const ts = document.querySelector('#tab-single');
   if (ts) ts.classList.toggle('on', mode === 'single');
   document.querySelector('#tab-alert').classList.toggle('on', mode === 'alert');
+  const tpg = document.querySelector('#tab-pgrid');
+  if (tpg) tpg.classList.toggle('on', mode === 'pgrid');
   // 多级别视图才有币种切换控件
   const csb = document.querySelector('#chart-symbar');
   if (csb) csb.style.display = 'none';   // 多级别视图已移除
   document.querySelector('#alert-symbar').style.display = mode === 'alert' ? '' : 'none';
   const zs = document.querySelector('#zero-symbar');
   if (zs) zs.style.display = (mode === 'zero' || mode === 'matrix' || isPair) ? '' : 'none';
+  const pgs = document.querySelector('#pg-symbar');
+  if (pgs) pgs.style.display = mode === 'pgrid' ? '' : 'none';
   const sbar = document.querySelector('#single-bar');
   if (sbar) sbar.style.display = mode === 'single' ? '' : 'none';
   // 'single' 表格模式下不需要图表轮询；K线模式下才启动
   // single 有两种模式：K线图要轮询图表，表格不需要（表格自己的轮询在 app.js）
   const singleTable = mode === 'single'
     && document.querySelector('#single-mode')?.value === 'table';
-  if (mode === 'matrix' || isPair || singleTable) stopLoop(); else startLoop();
+  if (mode === 'matrix' || isPair || mode === 'pgrid' || singleTable) stopLoop(); else startLoop();
+  // 配对全景自己轮询，进出该视图时启停
+  if (mode === 'pgrid') { if (typeof startPgPoll === 'function') startPgPoll(); }
+  else { if (typeof stopPgPoll === 'function') stopPgPoll(); }
 }
 
 function startLoop() {
@@ -854,6 +862,7 @@ function initCharts() {
     setView(zeroMode());
     if (zeroMode() === 'matrix' && typeof renderZero === 'function') renderZero();
   });
+  on('#tab-pgrid', 'click', () => setView('pgrid'));
   on('#tab-alert', 'click', () => setView('alert'));
   on('#chart-bars', 'change', () => refreshActive());
   on('#zero-limit', 'change', () => { if (typeof loadPair === 'function') loadPair(); });

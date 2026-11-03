@@ -28,7 +28,7 @@ const CORE = [
   'watch.js', 'zero-monitor.js', 'single-k.js', 'nn.js', 'pair-zero.js',
 ];
 const BROWSER = ['boot.js'];
-const PUBLIC_FILES = ['app.js', 'chart.js', 'pair.js', 'style.css'];
+const PUBLIC_FILES = ['app.js', 'chart.js', 'pair.js', 'pgrid.js', 'style.css'];
 
 /** 构建产物「拥有」的路径——只清理这些，不动 about.html 与 img/ */
 const OWNED = ['index.html', ...PUBLIC_FILES, 'vendor', 'src'];
@@ -99,6 +99,7 @@ const scripts = [
   '<script src="/app.js"></script>',
   '<script src="/chart.js"></script>',
   '<script src="/pair.js"></script>',
+  '<script src="/pgrid.js"></script>',
 ];
 const bootstrap = `<script>
 /* 纯前端版引导：先把 /api/* 与 EventSource 换成内存实现，再加载界面脚本。
@@ -123,7 +124,8 @@ const bootstrap = `<script>
     return load('./vendor/lightweight-charts.js')
       .then(function () { return load('./app.js'); })
       .then(function () { return load('./chart.js'); })
-      .then(function () { return load('./pair.js'); });
+      .then(function () { return load('./pair.js'); })
+      .then(function () { return load('./pgrid.js'); });
   }).catch(fail);
 })();
 </script>`;
