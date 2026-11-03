@@ -192,6 +192,13 @@ function routeApi(pathname, search) {
     }
     case '/api/zeroaxis': return { body: safe(() => engine.zeroAxis(Object.fromEntries(q)), { rows: [], symbols: [], levels: [] }) };
     case '/api/singlek': return { body: safe(() => engine.singleKScan(Object.fromEntries(q)), { items: [], total: 0, levels: [] }) };
+    case '/api/pairchart': {
+      const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 150));
+      const limit = Math.max(1, Math.min(60, Number(q.get('limit')) || 24));
+      return { body: safe(() => engine.pairZeroCharts(bars, limit, Object.fromEntries(q)), { items: [], total: 0 }) };
+    }
+    case '/api/pairzero': return { body: safe(() => engine.pairZeroScan(Object.fromEntries(q)), { items: [], total: 0 }) };
+    case '/api/nn': return { body: safe(() => engine.nnScan(Object.fromEntries(q)), { items: [], counts: {} }) };
     case '/api/singlekchart': {
       const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 120));
       const limit = Math.max(1, Math.min(60, Number(q.get('limit')) || 24));

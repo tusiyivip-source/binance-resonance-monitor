@@ -351,17 +351,20 @@ export function formatAlerts(alerts, { test = false, keyword = '' } = {}) {
   //   dual     = 形态提醒（双阴不破 / 双阳不穿）
   //   其它     = 多级别共振
   const nZero = alerts.filter(a => a.kind === 'zeropair').length;
+  const nPair = alerts.filter(a => a.kind === 'pairzero').length;
   const nSingle = alerts.filter(a => a.kind === 'singlek').length;
   const nDual = alerts.filter(a => a.kind === 'dual').length;
-  const nReso = alerts.length - nZero - nSingle - nDual;
+  const nReso = alerts.length - nZero - nPair - nSingle - nDual;
   const nTop = alerts.filter(a => a.tier === 'top').length;
   const nTail = alerts.filter(a => a.tier === 'tail').length;
-  const only = nSingle === alerts.length ? 'single'
+  const only = nPair === alerts.length ? 'pair'
+    : nSingle === alerts.length ? 'single'
     : nZero === alerts.length ? 'zero'
     : nDual === alerts.length ? 'dual' : 'mixed';
 
   let head;
   if (test) head = '🧪 钉钉推送测试';
+  else if (only === 'pair') head = `🔔 配对信号 ×${nPair}`;
   else if (only === 'single') head = `🔔 单K回踩不破 ×${nSingle}`;
   else if (only === 'zero') head = `🔔 零轴配对信号 ×${nZero}`;
   else if (only === 'dual') head = `🔔 形态提醒 ×${nDual}` + (nTop || nTail ? `（前段 ${nTop} · 后段 ${nTail}）` : '');
@@ -372,16 +375,31 @@ export function formatAlerts(alerts, { test = false, keyword = '' } = {}) {
     : (alerts.length === 1
       ? (() => {
           const a = alerts[0];
+          if (a.kind === 'pairzero') return `${a.side === 'long' ? '🔴' : '🟢'} ${a.symbol} ${a.pair} ${a.side === 'long' ? '看多' : '看空'}`;
           if (a.kind === 'singlek') return `${a.side === 'long' ? '🔴' : '🟢'} ${a.symbol} ${a.levelLabel ?? a.level} ${a.side === 'long' ? '看多' : '看空'}`;
           if (a.kind === 'zeropair') return `${a.side === 'long' ? '🔴' : '🟢'} ${a.symbol} ${a.pair} ${a.side === 'long' ? '看多' : '看空'}`;
           if (a.kind === 'dual') return `${a.side === 'long' ? '🔴' : '🟢'} ${a.symbol} ${a.levelLabel ?? ''} ${a.side === 'long' ? '看多' : '看空'}`;
           return `${a.confirmed ? '✅' : '⚡'} ${a.symbol} ${a.score}分 ${a.base}→${a.mid}→${a.big}`;
         })()
-      : (only === 'single' ? `单K ×${nSingle}` : only === 'zero' ? `零轴配对 ×${nZero}` : only === 'dual' ? `形态提醒 ×${nDual}` : `信号 ×${alerts.length}`)));
+      : (only === 'pair' ? `配对 ×${nPair}` : only === 'single' ? `单K ×${nSingle}` : only === 'zero' ? `零轴配对 ×${nZero}` : only === 'dual' ? `形态提醒 ×${nDual}` : `信号 ×${alerts.length}`)));
 
   const lines = [`### ${head}`, ''];
   const footer = () => { if (!test) lines.push('---', '来源：币安多级别共振盯盘系统'); };
 
+  // —— ⓪ 配对信号：次级别回踩 / 主级别零轴 ——
+  if (nPair) {
+    const pz = alerts.filter(a => a.kind === 'pairzero')
+      .sort((x, y) => (x.subPullBars ?? 0) - (y.subPullBars ?? 0) || String(x.symbol).localeCompare(String(y.symbol)));
+    if (only !== 'pair') { lines.push(`#### ◎ 配对信号（次级别回踩 / 主级别零轴）　×${nPair}`); lines.push(''); }
+    pz.forEach((a, i) => {
+      const up = a.side === 'long';
+      lines.push(`**${i + 1}. ${a.symbol}**　${a.subLabel} → ${a.mainLabel}　${up ? '看多' : '看空'}　榜内 #${a.rank ?? '—'}`);
+      lines.push(`> 主级别 DIF ${Number(a.mainDif).toPrecision(3)}（零轴${up ? '上' : '下'}，持续 ${a.mainHold} 根）`);
+      lines.push(`> ${a.subLabel} ${up ? '回踩' : '反弹'} ${a.subPullBars} 根，仍在零轴${up ? '上' : '下'}（DIF ${Number(a.subDif).toPrecision(3)}）`);
+      lines.push(`> 现价 ${a.price}　|　24h ${Number(a.changePct) >= 0 ? '+' : ''}${Number(a.changePct).toFixed(2)}%　|　${hhmm(a.ts)}`);
+      lines.push('');
+    });
+  }
   // —— ⓪ 单K回踩不破 ——
   // 每条的看点是「推动有多强 + 回调有多浅 + 不破线在哪」，三样都要写清楚。
   if (nSingle) {

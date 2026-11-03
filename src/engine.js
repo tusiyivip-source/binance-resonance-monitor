@@ -6,6 +6,8 @@ import { LEVELS, LEVEL_KEYS, LEVEL_INDEX, VISIBLE_LEVELS, STATE, EVENT, APP } fr
 import { evaluateSymbol, describe, defaultSignalConfig, encodeZero } from './signals.js';
 import { MONITOR_LEVEL_KEYS, ZERO_LEVEL_KEYS, ZERO_PAIRS, zeroOptions, zeroMonitorAt, zeroMatches, zeroPairHit, bigCandleSupport, compareZero } from './zero-monitor.js';
 import { SINGLE_K_LEVELS, singleKOptions, singleKAt } from './single-k.js';
+import { NN_INTERVALS, nnState } from './nn.js';
+import { PAIR_ZERO_PAIRS, pairZeroOptions, levelZeroAt, pairZeroHit, comparePairZero } from './pair-zero.js';
 import { Watcher } from './watch.js';
 import { DEFAULT_WATCH_GROUPS } from './config.js';
 
@@ -45,9 +47,16 @@ export class Engine extends Emitter {
     this.zeroSkippedStale = 0;     // 因「次级别K线收盘太久」被挡下的配对
     this.zeroCount = 0;            // 已产生的配对报警条数
     // 单K回踩不破 的报警去重与计数（缺了 singleKAlertSweep 会抛 TypeError）
+    // 配对策略（次级别回踩 / 主级别零轴）的报警去重与计数
+    this.pairZeroSeen = new Map();
+    this.pairZeroOn = new Map();
+    this.pairZeroSkippedStale = 0;
+    this.pairZeroSkippedQv = 0;
+    this.pairZeroCount = 0;
     this.singleKSeen = new Map();
     this.singleKOn = new Map();    // (币种|级别|方向) → 上一轮是否已成立
     this.singleKSkippedStale = 0;
+    this.singleKSkippedQv = 0;     // 因成交额不足被挡下的单K报警
     this.singleKCount = 0;
     this.strokeBlocked = 0;        // 因「回踩不够成笔」被拦下的次数
     this.beichiPerMin = 0;         // 近一分钟拦截次数
@@ -110,6 +119,7 @@ export class Engine extends Emitter {
     if (initialCount) this.log.info(`存量扫描完成：本轮载入 ${initialCount} 个已有的多级别共振形态（不鸣笛）`);
     // 配对报警出问题不能拖垮整个扫描（sweep 里还要做 prune、统计等）
     try { this.zeroAlertSweep(); } catch (e) { this.log?.warn?.('零轴配对报警异常：' + (e && e.message)); }
+    try { this.pairZeroAlertSweep(); } catch (e) { this.log?.warn?.('配对报警异常：' + (e && e.message)); }
     try { this.singleKAlertSweep(); } catch (e) { this.log?.warn?.('单K报警异常：' + (e && e.message)); }
     this.prune();
   }
@@ -404,6 +414,90 @@ export class Engine extends Emitter {
   }
 
   /**
+   * 「次级别回踩 / 主级别零轴」配对的报警扫描。
+   *
+   * 两道闸门同其他策略：
+   *   ① 状态跃迁 —— 同一 (币种|配对|方向) 只在「不成立 → 成立」时报一次；
+   *   ② 时效 —— 次级别K线必须刚收盘，否则是重启后翻出来的存量。
+   */
+  pairZeroAlertSweep() {
+    if (this.cfg.pairZeroAlertEnabled === false) return;
+    const opt = pairZeroOptions({}, this.cfg);
+    const maxStale = (this.cfg.pairZeroAlertStaleSec ?? 120) * 1000;
+    const minQv = this.cfg.pairZeroMinQuoteVolume ?? 0;
+    const now = Date.now();
+    for (const st of this.market.symbols.values()) {
+      if (!st?.seeded) continue;
+      if (!(st.rank > 0 && st.rank <= opt.topN)) continue;
+      const cache = new Map();
+      const zof = key => {
+        if (cache.has(key)) return cache.get(key);
+        const s = st.series?.[key];
+        let z = null;
+        if (s && s.t.length >= 40) {
+          let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+          while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
+          if (ci >= 35) { try { z = levelZeroAt(s, s.ensure(), ci); } catch { z = null; } }
+        }
+        cache.set(key, z);
+        return z;
+      };
+      for (const p of PAIR_ZERO_PAIRS) {
+        const sub = zof(p.sub), main = zof(p.main);
+        if (!sub || !main) continue;
+        for (const dir of [1, -1]) {
+          const onKey = st.symbol + '|' + p.sub + '|' + p.main + '|' + dir;
+          const hit = pairZeroHit(sub, main, dir, opt);
+          const wasOn = this.pairZeroOn.get(onKey) === true;
+          if (!hit) { if (wasOn) this.pairZeroOn.set(onKey, false); continue; }
+          if (wasOn) continue;                                  // 状态持续中
+          if (maxStale > 0 && now - sub.at > maxStale) {        // 次级别刚收盘才报
+            this.pairZeroSkippedStale++; continue;
+          }
+          if (minQv > 0 && !(Number(st.quoteVolume) >= minQv)) {
+            this.pairZeroSkippedQv++; continue;
+          }
+          this.pairZeroOn.set(onKey, true);
+          const key = 'pz|' + onKey + '|' + sub.at;
+          if (this.pairZeroSeen.has(key)) continue;
+          this.pairZeroSeen.set(key, now);
+
+          const up = dir > 0;
+          const subLabel = (LEVELS.find(l => l.key === p.sub) || {}).label || p.sub;
+          const mainLabel = (LEVELS.find(l => l.key === p.main) || {}).label || p.main;
+          const a = {
+            kind: 'pairzero', id: ++this.alertSeq, symbol: st.symbol, mode: 'closed',
+            side: hit.dir, confirmed: true, score: 0,
+            sub: p.sub, main: p.main, pair: p.sub + '-' + p.main,
+            subLabel, mainLabel,
+            subDif: hit.subDif, subHold: hit.subHold, subPullBars: hit.subPullBars, subPeak: hit.subPeak,
+            mainDif: hit.mainDif, mainHold: hit.mainHold,
+            rank: st.rank ?? 0,
+            price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+            changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+            quoteVolume: Math.round(st.quoteVolume ?? 0),
+            candleT: sub.at, ts: now,
+            initial: this.initialPhase,
+            text: `【${subLabel}→${mainLabel}】${up ? '主级别零轴上' : '主级别零轴下'}`
+              + `（DIF ${hit.mainDif > 0 ? '+' : ''}${Number(hit.mainDif).toPrecision(3)}，持续 ${hit.mainHold} 根），`
+              + `${subLabel} ${up ? '回踩' : '反弹'} ${hit.subPullBars} 根仍在零轴${up ? '上' : '下'}`
+              + `（DIF ${hit.subDif > 0 ? '+' : ''}${Number(hit.subDif).toPrecision(3)}）`,
+          };
+          this.alerts.push(a);
+          this.signalCount++;
+          this.pairZeroCount++;
+          this.emit('alert', a);
+          this.log.signal((up ? '🔴 ' : '🟢 ') + a.symbol + ' ' + a.text);
+        }
+      }
+    }
+    if (this.pairZeroSeen.size > 3000) {
+      const keys = [...this.pairZeroSeen.keys()].slice(0, this.pairZeroSeen.size - 3000);
+      for (const kk of keys) this.pairZeroSeen.delete(kk);
+    }
+  }
+
+  /**
    * 单K回踩不破 的报警扫描（替代原来的零轴配对推送）。
    *
    * 与 singleKScan（给前端表格/图表用）分开：这里只负责「产生新报警」。
@@ -430,12 +524,20 @@ export class Engine extends Emitter {
         for (const dir of [1, -1]) {
           const onKey = st.symbol + '|' + k + '|' + dir;
           let hit = null;
-          try { hit = singleKAt(s, ci, opt, dir); } catch { hit = null; }
+          const ind = s.ensure ? s.ensure() : null;   // 零轴筛选要读 DIF
+          try { hit = singleKAt(s, ci, opt, dir, ind); } catch { hit = null; }
           const wasOn = this.singleKOn.get(onKey) === true;
           if (!hit) { if (wasOn) this.singleKOn.set(onKey, false); continue; }
           if (wasOn) continue;                                  // 状态持续中
           if (maxStale > 0 && now - closedAt > maxStale) {      // 刚收盘才报
             this.singleKSkippedStale++; continue;
+          }
+          // 成交额门槛：24H 成交额太小的币，同样的K线更容易假突破、滑点也大。
+          // 放在「标记已成立」之前 —— 否则低成交额的形态会被标记为已报过，
+          // 等成交额涨上来后也不会再提醒。
+          const minQv = this.cfg.singleKMinQuoteVolume ?? 0;
+          if (minQv > 0 && !(Number(st.quoteVolume) >= minQv)) {
+            this.singleKSkippedQv++; continue;
           }
           this.singleKOn.set(onKey, true);
           const key = 'sk|' + onKey + '|' + s.t[ci];
@@ -456,9 +558,11 @@ export class Engine extends Emitter {
             barsAfter: hit.barsAfter, line: hit.line, bigT: hit.t,
             open: hit.open, close: hit.close, low: hit.low, high: hit.high,
             candleT: s.t[ci], ts: now,
+            zeroSide: hit.zeroSide, dif: hit.dif,
             tier: split > 0 && st.rank > 0 ? (st.rank <= split ? 'top' : 'tail') : null,
             initial: this.initialPhase,
-            text: `【${label}】${up ? '大阳线' : '大阴线'} ${up ? '+' : '−'}${hit.bodyPct.toFixed(1)}%（实体放大 ${hit.mult.toFixed(1)} 倍），`
+            text: `【${label}】${hit.zeroSide === 'above' ? '零轴上 ' : hit.zeroSide === 'below' ? '零轴下 ' : ''}`
+              + `${up ? '大阳线' : '大阴线'} ${up ? '+' : '−'}${hit.bodyPct.toFixed(1)}%（实体放大 ${hit.mult.toFixed(1)} 倍），`
               + `${up ? '回踩' : '反抽'} ${hit.retracePct.toFixed(1)}% 未破 ${hit.line}`,
           };
           this.alerts.push(a);
@@ -553,6 +657,170 @@ export class Engine extends Emitter {
   zeroAxis(input = {}) { return this.zeroScan(input).snapshot; }
 
   /**
+   * 配对策略的**平铺 K 线**：每条配对信号出一张**次级别**K线图，
+   * 图上标出「回踩起点」（本轮 DIF 极值那根）。
+   */
+  pairZeroCharts(bars = 120, limit = 24, input = {}) {
+    const scan = this.pairZeroScan(input);
+    const items = [];
+    for (const h of scan.items.slice(0, limit)) {
+      const st = this.market.symbols.get(h.symbol);
+      const lvl = st && this.levelPayload(st, h.sub, bars);
+      if (!lvl) continue;
+      items.push({
+        ...lvl, symbol: h.symbol, kind: 'pair', side: h.dir,
+        pair: {
+          sub: h.sub, main: h.main, pair: h.pair,
+          subLabel: h.subLabel, mainLabel: h.mainLabel,
+          dir: h.dir, rank: h.rank,
+          mainDif: h.mainDif, mainHold: h.mainHold,
+          subDif: h.subDif, subHold: h.subHold,
+          subPullBars: h.subPullBars, subPeak: h.subPeak, subPeakT: h.subPeakT, subAt: h.subAt,
+          price: h.price, changePct: h.changePct,
+        },
+      });
+    }
+    return {
+      generatedAt: scan.t, total: scan.total, longs: scan.longs, shorts: scan.shorts,
+      shown: items.length, limit, bars, options: scan.options, pairs: scan.pairs, items,
+    };
+  }
+
+  /**
+   * 「次级别回踩 / 主级别零轴」配对扫描。
+   *
+   * 七组配对（次 → 主）：5m-30m / 10m-1h / 15m-2h / 30m-3h / 1h-6h / 2h-12h / 4h-1d
+   * 多：主级别 DIF 在零轴上，次级别也在零轴上并且已经回踩 ≥ N 根
+   * 空：镜像（零轴下 + 反弹 ≥ N 根且没上穿）
+   */
+  pairZeroScan(input = {}) {
+    const opt = pairZeroOptions(input, this.cfg);
+    const now = Date.now();
+    const items = [];
+    let skippedStale = 0;
+    for (const sym of this.market.universe) {
+      const st = this.market.symbols.get(sym);
+      if (!st?.seeded) continue;
+      if (!(st.rank > 0 && st.rank <= opt.topN)) continue;
+
+      // 同一个币的级别状态只算一次（七组配对共用）
+      const cache = new Map();
+      const zof = key => {
+        if (cache.has(key)) return cache.get(key);
+        const s = st.series?.[key];
+        let z = null;
+        if (s && s.t.length >= 40) {
+          let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+          while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
+          if (ci >= 35) {
+            try { z = levelZeroAt(s, s.ensure(), ci); } catch { z = null; }
+          }
+        }
+        cache.set(key, z);
+        return z;
+      };
+
+      for (const p of PAIR_ZERO_PAIRS) {
+        const sub = zof(p.sub), main = zof(p.main);
+        if (!sub || !main) continue;
+        for (const dir of [1, -1]) {
+          const hit = pairZeroHit(sub, main, dir, opt);
+          if (!hit) continue;
+          if (opt.side !== 'all' && hit.dir !== opt.side) continue;
+          items.push({
+            symbol: sym,
+            sub: p.sub, main: p.main, pair: p.sub + '-' + p.main,
+            subLabel: (LEVELS.find(l => l.key === p.sub) || {}).label || p.sub,
+            mainLabel: (LEVELS.find(l => l.key === p.main) || {}).label || p.main,
+            rank: st.rank,
+            price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+            changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+            quoteVolume: Math.round(st.quoteVolume ?? 0),
+            ...hit,
+          });
+        }
+      }
+    }
+    items.sort(comparePairZero);
+    return {
+      t: now, total: items.length,
+      longs: items.filter(i => i.dir === 'long').length,
+      shorts: items.filter(i => i.dir === 'short').length,
+      pairs: PAIR_ZERO_PAIRS, options: opt, items,
+    };
+  }
+
+  /**
+   * 「牛牛盯盘」风格的结构扫描：当前周期 × 全部标的，
+   * 每个币算 双阴不破 / MACD 零轴位置 / 顺势回调 三个标记，
+   * 按「零上回调置顶、零下反弹垫底」分层排序，并附上画卡片要用的K线。
+   */
+  nnScan(input = {}) {
+    const num = (v, d, min, max) => (v == null || v === '' || !Number.isFinite(Number(v)) ? d : Math.max(min, Math.min(max, Number(v))));
+    const interval = NN_INTERVALS.some(([k]) => k === input.interval) ? input.interval : '15m';
+    const mode = ['gain', 'loss', 'vol'].includes(input.mode) ? input.mode : 'gain';
+    const pb = ['all', 'top', 'bottom'].includes(input.pb) ? input.pb : 'all';
+    const topN = Math.round(num(input.topN, this.cfg.appTopN ?? 200, 1, 400));
+    const limit = Math.round(num(input.limit, 60, 1, 200));
+    const bars = Math.round(num(input.bars, 80, 30, 300));
+    const now = Date.now();
+
+    const rows = [];
+    for (const sym of this.market.universe) {
+      const st = this.market.symbols.get(sym);
+      if (!st?.seeded) continue;
+      if (!(st.rank > 0 && st.rank <= topN)) continue;
+      const s = st.series?.[interval];
+      if (!s || s.t.length < 40) continue;
+      let ns;
+      try { ns = nnState(s, now); } catch { continue; }
+      rows.push({
+        sym, tier: ns.tier, pb: ns.pb, mz: ns.mz,
+        dbl: !!ns.dbl, dblDir: ns.dblDir, dblType: ns.dblType,
+        price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+        pct: Math.round((st.changePct ?? 0) * 100) / 100,
+        vol: Math.round(st.quoteVolume ?? 0),
+        rank: st.rank,
+      });
+    }
+
+    const counts = {
+      coins: rows.length,
+      top: rows.filter(r => r.pb === 1).length,
+      bottom: rows.filter(r => r.pb === -1).length,
+      dbl: rows.filter(r => r.dbl).length,
+      macUp: rows.filter(r => r.mz === 1).length,
+      macDn: rows.filter(r => r.mz === -1).length,
+      up: rows.filter(r => r.pct > 0).length,
+      dn: rows.filter(r => r.pct < 0).length,
+    };
+
+    let arr = rows.filter(r => pb === 'all' ? true : pb === 'top' ? r.pb === 1 : r.pb === -1);
+    // 先按用户选的口径排，再按分层稳定排序（零上回调置顶 / 零下反弹垫底）
+    if (mode === 'loss') arr.sort((a, b) => a.pct - b.pct);
+    else if (mode === 'vol') arr.sort((a, b) => b.vol - a.vol);
+    else arr.sort((a, b) => b.pct - a.pct);
+    arr.sort((a, b) => a.tier - b.tier);
+    const picked = arr.slice(0, limit);
+
+    // 画卡片用的K线：从服务端取，前端自己算均线和 MACD
+    const items = picked.map(r => {
+      const st = this.market.symbols.get(r.sym);
+      const s = st.series[interval];
+      const from = Math.max(0, s.t.length - bars);
+      const k = [];
+      for (let i = from; i < s.t.length; i++) k.push([s.t[i], s.o[i], s.h[i], s.l[i], s.c[i]]);
+      return { ...r, interval, ms: s.ms, k };
+    });
+
+    return {
+      generatedAt: now, interval, mode, pb, topN, limit, bars,
+      counts, matched: arr.length, shown: items.length,
+      intervals: NN_INTERVALS, items,
+    };
+  }
+
+  /**
    * 单K策略的**平铺 K 线**数据：每个命中 (币种 × 级别) 出一张图，
    * 按级别轮转取，避免某一级别占满画面。
    */
@@ -573,6 +841,7 @@ export class Engine extends Emitter {
           side: h.dir || h.side,
           bodyPct: h.bodyPct, mult: h.mult, retracePct: h.retracePct,
           barsAfter: h.barsAfter, low: h.low, high: h.high, line: h.line,
+          zeroSide: h.zeroSide, dif: h.dif,
           open: h.open, close: h.close,
           bigT: h.t, price: h.price, changePct: h.changePct, quoteVolume: h.quoteVolume,
           minClose: h.minClose, maxClose: h.maxClose, at: h.at,
@@ -612,7 +881,8 @@ export class Engine extends Emitter {
         const label = (LEVELS.find(l => l.key === k) || {}).label || k;
         for (const dir of [1, -1]) {
           let hit = null;
-          try { hit = singleKAt(s, ci, opt, dir); } catch { hit = null; }
+          const ind = s.ensure ? s.ensure() : null;   // 零轴筛选要读 DIF
+          try { hit = singleKAt(s, ci, opt, dir, ind); } catch { hit = null; }
           if (!hit) continue;
           items.push({
             symbol: sym, level: k, levelLabel: label, side: hit.dir,
@@ -632,6 +902,9 @@ export class Engine extends Emitter {
       t: now, total: items.length, topN: opt.topN,
       longs: items.filter(i => i.side === 'long').length,
       shorts: items.filter(i => i.side === 'short').length,
+      zeroAbove: items.filter(i => i.zeroSide === 'above').length,
+      zeroBelow: items.filter(i => i.zeroSide === 'below').length,
+      zeroSide: opt.zeroSide,
       levels: SINGLE_K_LEVELS, options: opt, items,
     };
   }
@@ -779,15 +1052,19 @@ export class Engine extends Emitter {
       if (!key || LEVEL_INDEX[key] == null) { skipped.push({ symbol: a.symbol, why: 'no-level-key', group: a.group }); continue; }
       const lvl = this.levelPayload(st, key, bars);
       if (!lvl) { skipped.push({ symbol: a.symbol, why: 'no-level' }); continue; }
+      // 单K报警要按单K的样式渲染：卡片头显示幅度/回踩/不破线，
+      // 图上还要画出那根推动K线的标记和「不破线」横线。
+      // 这里把 kind 归一成 'single' 并补一个 single 子对象（与 singleKCharts 同构）。
+      const isSK = a.kind === 'singlek';
       items.push({
         ...lvl,
         symbol: a.symbol,
         alertId: a.id,
-        kind: a.kind ?? 'resonance',
+        kind: isSK ? 'single' : (a.kind ?? 'resonance'),
         side: a.side ?? null,
         // 形态提醒是「K线已收盘」的确认信号，用 closed 让卡片按已确认样式渲染
-        mode: a.confirmed || a.kind === 'dual' ? 'closed' : a.mode,
-        confirmed: !!a.confirmed || a.kind === 'dual',
+        mode: a.confirmed || a.kind === 'dual' || isSK ? 'closed' : a.mode,
+        confirmed: !!a.confirmed || a.kind === 'dual' || isSK,
         pair: a.pair ?? null, sub: a.sub ?? null, main: a.main ?? null,
         score: a.score,
         group: a.group,
@@ -796,6 +1073,17 @@ export class Engine extends Emitter {
         alertPrice: a.price ?? null,
         text: a.text ?? '',
         initial: !!a.initial,
+        ...(isSK ? {
+          single: {
+            level: a.level, levelLabel: a.levelLabel, rank: a.rank,
+            side: a.side, bodyPct: a.bodyPct, mult: a.mult, retracePct: a.retracePct,
+            barsAfter: a.barsAfter, low: a.low, high: a.high, line: a.line,
+            open: a.open, close: a.close, bigT: a.bigT,
+            price: a.price, changePct: a.changePct, quoteVolume: a.quoteVolume,
+            zeroSide: a.zeroSide, dif: a.dif, minClose: a.minClose, maxClose: a.maxClose,
+            at: a.candleT,
+          },
+        } : {}),
       });
     }
     return {
@@ -852,7 +1140,8 @@ export class Engine extends Emitter {
       watchDbg: this.watchDbg,
       dual: { ...this.dualCount, seen: this.dualSeen.size, skippedByVolume: this.dualSkippedQv || 0, skippedByStale: this.dualSkippedStale || 0, tier: { ...this.dualTierCount }, tierSplit: this.cfg.dualTierSplit,
         star: this.dualStarCount || 0, starRank: this.cfg.dualStarRank, zeroPair: { count: this.zeroCount || 0, seen: this.zeroSeen.size, skippedStale: this.zeroSkippedStale || 0 },
-        singleK: { count: this.singleKCount || 0, seen: this.singleKSeen.size, skippedStale: this.singleKSkippedStale || 0 }, cfg: {
+        pairZero: { count: this.pairZeroCount || 0, seen: this.pairZeroSeen.size, skippedStale: this.pairZeroSkippedStale || 0, skippedByVolume: this.pairZeroSkippedQv || 0 },
+        singleK: { count: this.singleKCount || 0, seen: this.singleKSeen.size, skippedStale: this.singleKSkippedStale || 0, skippedByVolume: this.singleKSkippedQv || 0, minQuoteVolume: this.cfg.singleKMinQuoteVolume }, cfg: {
         enabled: this.cfg.dualEnabled, levels: this.cfg.dualLevels, bars: this.cfg.dualBars,
         minQuoteVolume: this.cfg.dualMinQuoteVolume,
       } },

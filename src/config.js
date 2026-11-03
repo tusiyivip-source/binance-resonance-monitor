@@ -163,9 +163,22 @@ export const DEFAULT_SIGNAL = {
   singleKLookback: 20,       // 在这多少根内找那根大阳线
   singleKMaxAfter: 12,       // 回调最多持续多少根（超过视为过期）
   // 单K信号是否推送钉钉
-  singleKAlertEnabled: true,
+  singleKAlertEnabled: false,  // 推送已切到「次级别回踩 / 主级别零轴」配对
   // 当前K线收盘超过这么多秒就不再报警（防重启后把存量一次性推出去）
   singleKAlertStaleSec: 120,
+  // 成交额门槛：24H 成交额低于此值（USDT）就不推送钉钉（表格里仍然显示）。
+  // 小成交额的币容易凑出假突破，而且滑点大、实际不好成交。
+  singleKMinQuoteVolume: 5_000_000,   // 500 万 USDT
+  // 只报「单K发生在零轴上方/下方」的信号：all=不限 / above=零轴上 / below=零轴下
+  singleKZeroSide: 'all',
+
+  // —— 次级别回踩 / 主级别零轴 配对策略 ——
+  pairZeroMinPullBars: 5,     // 次级别回踩（反弹）至少多少根才提醒
+  pairZeroMinMainHold: 1,     // 主级别 DIF 至少要在零轴同侧多少根
+  pairZeroTopN: 200,          // 只扫涨幅榜前 N
+  pairZeroAlertEnabled: true, // 是否推送钉钉
+  pairZeroAlertStaleSec: 120, // 次级别K线收盘超过这么多秒就不再报（防重启翻存量）
+  pairZeroMinQuoteVolume: 0,  // 成交额门槛（0=不限）
   // 零轴配对信号是否推送钉钉（true=推送）
   zeroAlertEnabled: false,   // 零轴配对推送已停用（改推单K回踩不破）
   // 次级别K线收盘超过这么多秒就不再报警（防重启后把存量一次性推出去）

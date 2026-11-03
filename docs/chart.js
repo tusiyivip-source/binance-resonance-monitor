@@ -40,6 +40,7 @@ const VIEWS = {
   alert: { kind: 'alert', grid: null, entries: [], items: [], roles: {}, cols: 4 },
   zero: { kind: 'zero', grid: null, entries: [], items: [], roles: {}, cols: 4, minBars: 120 },
   single: { kind: 'single', grid: null, entries: [], items: [], roles: {}, cols: 4, minBars: 100 },
+  pair: { kind: 'pair', grid: null, entries: [], items: [], roles: {}, cols: 2, minBars: 100 },
 };
 let activeView = 'matrix';         // 'matrix' | 'alert' | 'zero'
 let viewTimer = null;
@@ -49,13 +50,14 @@ function setView(mode) {
   for (const view of Object.values(VIEWS)) view.controller?.abort();
   activeView = mode;
   const isChart = mode === 'alert' || mode === 'zero' || mode === 'single';
+  const isPair = mode === 'pair';
   document.body.classList.toggle('chartmode', isChart);
   document.body.classList.toggle('alertchartmode', mode === 'alert');
   document.body.classList.toggle('zerochartmode', mode === 'zero');
-  document.body.classList.toggle('zeromonitor', mode === 'zero' || mode === 'matrix');
+  document.body.classList.toggle('zeromonitor', mode === 'zero' || mode === 'matrix' || isPair);
   document.body.classList.toggle('singlemode', mode === 'single');
   document.body.classList.toggle('singlechartmode', mode === 'single');
-  document.querySelector('#tab-zero').classList.toggle('on', mode === 'matrix' || mode === 'zero');
+  document.querySelector('#tab-zero').classList.toggle('on', mode === 'matrix' || mode === 'zero' || isPair);
   const ts = document.querySelector('#tab-single');
   if (ts) ts.classList.toggle('on', mode === 'single');
   document.querySelector('#tab-alert').classList.toggle('on', mode === 'alert');
@@ -64,14 +66,14 @@ function setView(mode) {
   if (csb) csb.style.display = 'none';   // 多级别视图已移除
   document.querySelector('#alert-symbar').style.display = mode === 'alert' ? '' : 'none';
   const zs = document.querySelector('#zero-symbar');
-  if (zs) zs.style.display = mode === 'zero' ? '' : 'none';
+  if (zs) zs.style.display = (mode === 'zero' || mode === 'matrix' || isPair) ? '' : 'none';
   const sbar = document.querySelector('#single-bar');
   if (sbar) sbar.style.display = mode === 'single' ? '' : 'none';
   // 'single' 表格模式下不需要图表轮询；K线模式下才启动
   // single 有两种模式：K线图要轮询图表，表格不需要（表格自己的轮询在 app.js）
   const singleTable = mode === 'single'
     && document.querySelector('#single-mode')?.value === 'table';
-  if (mode === 'matrix' || singleTable) stopLoop(); else startLoop();
+  if (mode === 'matrix' || isPair || singleTable) stopLoop(); else startLoop();
 }
 
 function startLoop() {
@@ -84,9 +86,10 @@ function stopLoop() {
 }
 function refreshActive() {
   if (document.hidden) return;
-  if (activeView === 'single') refreshSingleView();
+  if (activeView === 'pair') refreshPairView();
+  else if (activeView === 'single') refreshSingleView();
   else if (activeView === 'alert') refreshAlertView();
-  else if (activeView === 'zero') refreshZeroView();
+  // 零轴标签页已换成配对监控表，刷新由 pair.js 自己轮询，这里不再拉图表
 }
 
 /* ---------------- 布局 ---------------- */
@@ -139,12 +142,19 @@ function applyCols(view) {
   const isAlert = view.kind === 'alert';
   const isZero = view.kind === 'zero';
   const isSingle = view.kind === 'single';
+  const isPair = view.kind === 'pair';
   const zeroSize = document.querySelector('#zero-size')?.value || 'normal';
   const minH = isZero ? ({compact:140, normal:230, large:320, xl:430}[zeroSize] || 230)
     : isAlert && document.querySelector('#alert-size').value !== 'compact' ? alertMinH() : 0;
   const minW = isZero ? 340 : isAlert && minH ? ALERT_MIN_W : MIN_CW;
   let cols, ch;
-  if (isSingle) {
+  if (isPair) {
+    // 配对图的列数由工具条决定
+    const want = Math.max(1, Math.min(4, +(document.querySelector('#pair-size')?.value) || 2));
+    cols = want;
+    ch = ({ 1: 520, 2: 420, 3: 340, 4: 300 }[want] || 420);
+    view.cols = cols; view.rows = Math.ceil(n / cols); view.fits = true;
+  } else if (isSingle) {
     // 单K图默认一行 2 张：塞得太多图表太矮，K 线细节看不清
     const want = Math.max(1, Math.min(4, +(document.querySelector('#single-size')?.value) || 2));
     cols = want;
@@ -367,12 +377,32 @@ function paintCard(view, i, it) {
   card.className = cls.join(' ');
 
   const meta = card.querySelector('.zero-meta');
-  meta.hidden = !isZero;
+  // 配对卡片与单K卡片也要显示这行摘要（以前只有零轴视图显示）
+  meta.hidden = !(isZero || it.kind === 'pair' || it.kind === 'single');
   const head = card.querySelector('.cchead');
   const divBadge = it.chanState?.divergence === 'pending'
     ? `<span class="st badge-div">${it.chanState.divDir === 'top' ? '顶' : '底'}背驰酝酿</span>` : '';
 
-  if (it.kind === 'single') {
+  if (it.kind === 'pair') {
+    // 配对信号：次级别K线 + 主级别定方向
+    const pr = it.pair || {};
+    const up = pr.dir !== 'short';
+    head.querySelector('.lv').innerHTML = `<span class="sym">${it.symbol}</span>`;
+    head.querySelector('.roles').innerHTML = `<span class="rb lvl">${pr.subLabel || it.label}</span>`;
+    const st = head.querySelector('.st');
+    st.textContent = up ? '看多' : '看空';
+    st.className = 'st ' + (up ? 's1' : 's3');
+    head.querySelector('.sp').textContent = '#' + (i + 1) + ' · '
+      + (pr.subLabel || pr.sub) + ' → ' + (pr.mainLabel || pr.main)
+      + ' · 榜内 #' + (pr.rank ?? '—');
+    meta.innerHTML = '<div><b>主级别 DIF ' + Number(pr.mainDif).toPrecision(3) + '</b>'
+      + '<span>零轴' + (up ? '上' : '下') + ' · 持续 ' + (pr.mainHold ?? '—') + ' 根</span></div>'
+      + '<div><span>' + (up ? '回踩 ' : '反弹 ') + (pr.subPullBars ?? '—') + ' 根</span>'
+      + '<span>次级别 DIF ' + Number(pr.subDif).toPrecision(3) + '</span></div>';
+    meta.title = (pr.subLabel || pr.sub) + ' 是本轮' + (up ? '回踩' : '反弹') + '用了 ' + (pr.subPullBars ?? '—')
+      + ' 根（起点 DIF ' + Number(pr.subPeak).toPrecision(3) + '），全程没穿越零轴；'
+      + '主级别 ' + (pr.mainLabel || pr.main) + ' DIF ' + Number(pr.mainDif).toPrecision(3);
+  } else if (it.kind === 'single') {
     // 单K策略：每张卡是一个 (币种 × 级别 × 方向) 的「单K + 回调不破」
     const sk = it.single || {};
     const up = (sk.side || it.side || 'long') === 'long';
@@ -382,11 +412,16 @@ function paintCard(view, i, it) {
     st.textContent = up ? '看多' : '看空';
     st.className = 'st ' + (up ? 's1' : 's3');
     head.querySelector('.sp').textContent = '#' + (i + 1) + ' · ' + lvLabel(it.key)
-      + ' · 榜内 #' + (sk.rank ?? '—');
+      + ' · 榜内 #' + (sk.rank ?? '—')
+      + (sk.zeroSide === 'above' ? ' · 零轴上' : sk.zeroSide === 'below' ? ' · 零轴下' : '');
     meta.innerHTML = '<div><b>单K ' + (up ? '+' : '−') + Number(sk.bodyPct || 0).toFixed(1) + '%</b>'
       + '<span>实体放大 ' + Number(sk.mult || 0).toFixed(1) + ' 倍</span></div>'
       + '<div><span>' + (up ? '回踩 ' : '反抽 ') + Number(sk.retracePct || 0).toFixed(2) + '%（' + (sk.barsAfter ?? '—') + ' 根）</span>'
-      + '<span>不破线 ' + (sk.line ?? sk.low ?? '—') + '</span></div>';
+      + '<span>不破线 ' + (sk.line ?? sk.low ?? '—') + '</span></div>'
+      + (sk.dif != null
+        ? '<div><span>DIF ' + Number(sk.dif).toPrecision(4) + '（'
+          + (sk.zeroSide === 'above' ? '零轴上方' : '零轴下方') + '）</span></div>'
+        : '');
     meta.title = (up ? '大阳线' : '大阴线') + '：开盘 ' + sk.open + '  收盘 ' + sk.close
       + (up ? '  最低 ' + sk.low : '  最高 ' + sk.high)
       + (up ? '｜反抽/回调期间最低收盘 ' + sk.minClose + '（未跌破最低价即「不破」）'
@@ -481,6 +516,25 @@ function paintCard(view, i, it) {
     
     if(visible.has(z.firstNearBarAt)) zeroMarkers.push({time:Math.floor(z.firstNearBarAt/1000),position:'belowBar',color:'#38bdf8',shape:'circle',text:'首次回踩到位'});
   }
+  // 配对策略：标出「回踩起点」——次级别 DIF 本轮极值那一根
+  if (it.kind === 'pair' && it.pair && it.pair.subPeakT) {
+    const pr = it.pair, visible = new Set(cs.map(c => c[0]));
+    const up = pr.dir !== 'short';
+    if (visible.has(pr.subPeakT)) {
+      zeroMarkers.push({
+        time: Math.floor(pr.subPeakT / 1000), position: up ? 'aboveBar' : 'belowBar',
+        color: '#f0b90b', shape: up ? 'arrowDown' : 'arrowUp',
+        text: (up ? '回踩起点 ' : '反弹起点 ') + (pr.subPullBars ?? '') + ' 根前',
+      });
+    }
+    const lastT = cs.length ? cs[cs.length - 1][0] : null;
+    if (lastT) {
+      zeroMarkers.push({
+        time: Math.floor(lastT / 1000), position: up ? 'belowBar' : 'aboveBar',
+        color: '#38bdf8', shape: 'circle', text: up ? '回踩中' : '反弹中',
+      });
+    }
+  }
   // 单K策略：标出那根大阳线，并画出「不破线」（大阳线最低价）
   if (it.kind === 'single' && it.single) {
     const sk = it.single, visible = new Set(cs.map(c => c[0]));
@@ -564,6 +618,35 @@ document.addEventListener('visibilitychange', () => {
  * 每张图是一个达标的 (币种 × 级别)，MACD 副图能看到 DIF 回调到零轴附近但没跌破。
  */
 /** 单K策略的平铺 K 线墙：每个命中 (币种 × 级别) 一张图 */
+/** 配对策略的平铺K线：每条信号出一张次级别图，标出回踩起点 */
+async function refreshPairView() {
+  const view = VIEWS.pair;
+  if (!view.grid) return;
+  applyCols(view);
+  const bars = currentBars(view);
+  const limit = +(document.querySelector("#zero-limit")?.value) || 24;
+  const side = (typeof PAIR !== "undefined" && PAIR.side) || "all";
+  try {
+    const d = await fetchChart(view, `/api/pairchart?bars=${bars}&limit=${limit}&side=${side}`);
+    if (!d) return;
+    view.items = d.items ?? [];
+    ensureCards(view, view.items);
+    paintView(view);
+    applyCols(view);
+    const emptyEl = document.querySelector("#pair-empty");
+    if (emptyEl) emptyEl.style.display = view.items.length ? "none" : "";
+    const n = view.items.length;
+    const rows = view.rows ?? (n ? Math.ceil(n / (view.cols || 2)) : 0);
+    const live = document.querySelector("#pair-live");
+    if (live) {
+      live.textContent = n
+        ? `命中 ${d.total} 条（多 ${d.longs} / 空 ${d.shorts}） · 展示 ${n} 个 · ${view.cols} 列 × ${rows} 行 · ${bars} 根 · `
+          + new Date().toLocaleTimeString("zh-CN", { hour12: false })
+        : "当前没有符合条件的配对信号 · " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    }
+  } catch { /* 单次失败忽略 */ }
+}
+
 async function refreshSingleView() {
   const view = VIEWS.single;
   if (!view.grid) return;
@@ -571,7 +654,8 @@ async function refreshSingleView() {
   const bars = currentBars(view);
   const limit = +(document.querySelector("#single-limit")?.value) || 24;
   try {
-    const d = await fetchChart(view, `/api/singlekchart?bars=${bars}&limit=${limit}`);
+    const zeroQ = document.querySelector('#single-zero')?.value || 'all';
+    const d = await fetchChart(view, `/api/singlekchart?bars=${bars}&limit=${limit}&zero=${zeroQ}`);
     if (!d) return;
     view.items = d.items ?? [];
     ensureCards(view, view.items);
@@ -697,28 +781,30 @@ function initCharts() {
   VIEWS.alert.grid = document.querySelector('#alertchartgrid');
   VIEWS.zero.grid = document.querySelector('#zerochartgrid');
   VIEWS.single.grid = document.querySelector('#singlechartgrid');
+  VIEWS.pair.grid = document.querySelector('#pairchartgrid');
 
-  // 零轴标签页：按「展示方式」决定是表格还是K线图
+  // 零轴标签页现在放的是「结构卡片墙」，旧的表格/图表控件已移除，
+  // 这里统一用容错绑定：元素不存在就跳过，避免整个 initCharts 抛错。
   const zeroMode = () => (document.querySelector('#zero-mode')?.value === 'table' ? 'matrix' : 'zero');
-  document.querySelector('#tab-zero').addEventListener('click', () => setView(zeroMode()));
-  document.querySelector('#zero-mode').addEventListener('change', () => {
+  const on = (sel, evt, fn) => { const el = document.querySelector(sel); if (el) el.addEventListener(evt, fn); };
+  on('#tab-zero', 'click', () => setView('pair'));
+  on('#zero-mode', 'change', () => {
     setView(zeroMode());
-    // 切回表格时补一次渲染（图表模式期间表格渲染被跳过了）
     if (zeroMode() === 'matrix' && typeof renderZero === 'function') renderZero();
   });
-  document.querySelector('#tab-alert').addEventListener('click', () => setView('alert'));
-  document.querySelector('#chart-bars').addEventListener('change', () => refreshActive());
-  document.querySelector('#zero-limit').addEventListener('change', () => refreshZeroView());
-  document.querySelector('#zero-size').addEventListener('change', () => { applyCols(VIEWS.zero); refreshZeroView(); });
-  document.querySelector('#zero-refresh').addEventListener('click', () => refreshZeroView());
-  document.querySelector('#alert-limit').addEventListener('change', () => refreshAlertView());
-  document.querySelector('#alert-size').addEventListener('change', () => { applyCols(VIEWS.alert); refreshAlertView(); });
+  on('#tab-alert', 'click', () => setView('alert'));
+  on('#chart-bars', 'change', () => refreshActive());
+  on('#zero-limit', 'change', () => { if (typeof loadPair === 'function') loadPair(); });
+  on('#zero-size', 'change', () => { applyCols(VIEWS.zero); refreshZeroView(); });
+  on('#zero-refresh', 'click', () => { if (typeof loadPair === 'function') loadPair(); });
+  on('#alert-limit', 'change', () => refreshAlertView());
+  on('#alert-size', 'change', () => { applyCols(VIEWS.alert); refreshAlertView(); });
   ['#chart-ma', '#chart-chan', '#chart-mark', '#chart-macd'].forEach(s =>
-    document.querySelector(s).addEventListener('change', () => {
+    on(s, 'change', () => {
       if (activeView === 'zero') paintView(VIEWS.zero);
-          else if (activeView === 'alert') paintView(VIEWS.alert);
+      else if (activeView === 'alert') paintView(VIEWS.alert);
     }));
-  document.querySelector('#alert-refresh').addEventListener('click', () => refreshAlertView());
+  on('#alert-refresh', 'click', () => refreshAlertView());
 
   let rt = null;
   window.addEventListener('resize', () => {
@@ -740,6 +826,8 @@ if (typeof LC === 'undefined') {
   console.error('[chart] LightweightCharts 未加载，K线图不可用');
 } else {
   initCharts();
+  // 默认页就是配对监控（K线图），直接进 pair 视图
+  setView('pair');
 }
 
 // 「多级别 K 线图」视图已移除：点击币种改为打开该币种的级别明细面板

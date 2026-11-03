@@ -61,7 +61,15 @@ function signalHasScore(a) {
 function signalChain(a) {
   if (a.pair) return a.pair;
   if (a.sub && a.main) return `${lvLabel(a.sub)} → ${lvLabel(a.main)}`;
-  if (signalKind(a) === 'dual') return `${lvLabel(a.level || a.base) || '—'} · ${a.side === 'short' ? '双阳不穿' : '双阴不破'}`;
+  const kind = signalKind(a);
+  if (kind === 'singlek') {
+    // 单K没有「组合」，副标题写它自己的关键信息：零轴位置 + 幅度
+    const up = a.side !== 'short';
+    return `${lvLabel(a.level || a.base) || '—'} · `
+      + (a.zeroSide === 'above' ? '零轴上 ' : a.zeroSide === 'below' ? '零轴下 ' : '')
+      + (up ? '大阳线 +' : '大阴线 −') + Number(a.bodyPct ?? 0).toFixed(1) + '%';
+  }
+  if (kind === 'dual') return `${lvLabel(a.level || a.base) || '—'} · ${a.side === 'short' ? '双阳不穿' : '双阴不破'}`;
   return [a.base, a.mid, a.big].filter(Boolean).map(lvLabel).join(' → ') || '历史记录（组合未保存）';
 }
 function zeroFilterMatches(item) {
@@ -302,6 +310,8 @@ function makeMonitorRow(p) {
   return {tr,refs};
 }
 function renderZero() {
+  // 零轴表格页已被「结构卡片墙」取代，DOM 不存在时直接返回（防呆）
+  if (!document.querySelector('#grid')) return;
   if ($('#zero-mode')?.value==='chart'||!ZERO) return;
   const list=filteredZeroPairs();
   const cmp={sym:(a,b)=>a.symbol.localeCompare(b.symbol),price:(a,b)=>a.price-b.price,
@@ -417,7 +427,7 @@ let singleTimer = null;
 
 async function loadSingleK() {
   try {
-    const r = await fetch('/api/singlek');
+    const r = await fetch('/api/singlek?zero=' + ($('#single-zero')?.value || 'all'));
     if (!r.ok) return;
     SINGLE = await r.json();
     renderSingleK();
@@ -447,6 +457,11 @@ function renderSingleK() {
     td('c-lv', it.levelLabel || it.level);
     const dirCell = td('c-dir', (it.side === 'short' ? '空' : '多'));
     dirCell.style.color = it.side === 'short' ? '#ef4444' : '#22c55e';
+    const zCell = td('c-zero', it.zeroSide === 'above' ? '上' : it.zeroSide === 'below' ? '下' : '—');
+    zCell.style.color = it.zeroSide === 'above' ? '#22c55e' : it.zeroSide === 'below' ? '#ef4444' : '#5b6f8c';
+    zCell.title = it.zeroSide
+      ? '单K发生时 DIF=' + Number(it.dif).toPrecision(3) + '（' + (it.zeroSide === 'above' ? '零轴上方' : '零轴下方') + '）'
+      : '未取到 DIF';
     const up = it.side !== 'short';
     td('c-num ' + (up ? 'up' : 'down'), (up ? '+' : '−') + it.bodyPct.toFixed(2) + '%',
       `${up ? '大阳线' : '大阴线'}收盘 ${it.close} / 开盘 ${it.open}`);
@@ -1057,10 +1072,8 @@ async function pollStats() {
 function bind() {
   let filterTimer;
   const updateZero = () => {
-    lastOrderKey=null; sortKey='firstNear';
-    document.querySelectorAll('th.sortable').forEach(th=>th.classList.remove('asc','desc'));
-    renderZero(); loadZero();
-    if(typeof activeView!=='undefined' && activeView==='zero') refreshZeroView();
+    // 零轴表格页已移除，筛选相关操作改为刷新结构卡片墙
+    if (typeof loadPair === 'function') loadPair();
   };
   $('#q').addEventListener('input', () => { clearTimeout(filterTimer); filterTimer=setTimeout(updateZero, 200); });
   // 零轴视图的筛选（纯前端重算，不发请求）
@@ -1094,6 +1107,10 @@ const singleModeSel = $('#single-mode');
 if (singleModeSel) singleModeSel.addEventListener('change', applySingleMode);
 const singleLimitSel = $('#single-limit');
 if (singleLimitSel) singleLimitSel.addEventListener('change', () => { if (singleModeNow() === 'chart') refreshActive(); });
+const singleZeroSel = $('#single-zero');
+if (singleZeroSel) singleZeroSel.addEventListener('change', () => {
+  if (singleModeNow() === 'table') loadSingleK(); else refreshActive();
+});
 const singleSizeSel = $('#single-size');
 if (singleSizeSel) singleSizeSel.addEventListener('change', () => {
   // 只改布局：立刻按新列数重排，不必等下一次请求
@@ -1249,10 +1266,8 @@ connect();
 loadPush();
 setInterval(pollStats, 3000);
 pollStats();
-// 零轴数据独立轮询（2 秒）：200 标的 × 14 级别约 2800 个格子，
-// 塞进 SSE 会让每帧多几十 KB，所以单独一个接口 + 单独节奏。
-setInterval(loadZero, 2000);
-loadZero();
+// 零轴表格页已被「配对监控表」取代（刷新由 pair.js 负责），这里不再轮询 /api/zeroaxis，
+// 否则 renderZero 会去写已经被移除的 #grid / #empty 并抛错。
 // 推送状态与报警卡片的"信号后"涨跌幅一起刷新
 setInterval(() => { if (alerts.length) renderAlerts(); }, 5000);
 setInterval(async () => {

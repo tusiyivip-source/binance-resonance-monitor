@@ -25,10 +25,10 @@ const CORE = [
   'config.js', 'indicators.js', 'chan.js', 'series.js', 'signals.js',
   'rest.js', 'market.js', 'tickfeed.js', 'engine.js',
   'emitter.js', 'logger.js', 'tracker.js', 'push-meta.js',
-  'watch.js', 'zero-monitor.js', 'single-k.js',
+  'watch.js', 'zero-monitor.js', 'single-k.js', 'nn.js', 'pair-zero.js',
 ];
 const BROWSER = ['boot.js'];
-const PUBLIC_FILES = ['app.js', 'chart.js', 'style.css'];
+const PUBLIC_FILES = ['app.js', 'chart.js', 'pair.js', 'style.css'];
 
 /** 构建产物「拥有」的路径——只清理这些，不动 about.html 与 img/ */
 const OWNED = ['index.html', ...PUBLIC_FILES, 'vendor', 'src'];
@@ -93,11 +93,12 @@ let html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 // 静态资源改相对路径（部署到子目录时绝对路径会 404）
 html = html.replace('href="/style.css"', 'href="./style.css"');
 
-// 替换底部的三个 script 标签为「先装补丁、再加载界面」的引导器
+// 替换底部的四个 script 标签为「先装补丁、再加载界面」的引导器
 const scripts = [
   '<script src="/vendor/lightweight-charts.js"></script>',
   '<script src="/app.js"></script>',
   '<script src="/chart.js"></script>',
+  '<script src="/pair.js"></script>',
 ];
 const bootstrap = `<script>
 /* 纯前端版引导：先把 /api/* 与 EventSource 换成内存实现，再加载界面脚本。
@@ -121,7 +122,8 @@ const bootstrap = `<script>
     }
     return load('./vendor/lightweight-charts.js')
       .then(function () { return load('./app.js'); })
-      .then(function () { return load('./chart.js'); });
+      .then(function () { return load('./chart.js'); })
+      .then(function () { return load('./pair.js'); });
   }).catch(fail);
 })();
 </script>`;

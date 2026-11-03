@@ -63,13 +63,18 @@
 
 <main>
   <div class="viewtabs">
-    <button id="tab-zero" class="vt on">◎ 七周期独立监控</button>
+    <button id="tab-zero" class="vt on">◎ 配对监控</button>
     <button id="tab-single" class="vt">🚀 单K回踩不破</button>
     <span class="vtsep"></span>
     <span id="single-bar" style="display:none">
       <select id="single-mode" class="vtsel" title="单K策略的展示方式">
         <option value="chart" selected>K线图</option>
         <option value="table">表格</option>
+      </select>
+      <select id="single-zero" class="vtsel" title="只看「那根单K发生时」MACD DIF 在零轴哪一侧的形态">
+        <option value="all" selected>零轴不限</option>
+        <option value="above">只看零轴上的</option>
+        <option value="below">只看零轴下的</option>
       </select>
       <select id="single-size" class="vtsel" title="每行显示几张图（图表高度会随之变化）">
         <option value="1">1 列（最大）</option>
@@ -88,25 +93,30 @@
     </span>
     <button id="tab-alert" class="vt">🔔 报警级别K线</button>
     <span class="vtsep"></span>
-    <select id="zero-mode" class="vtsel" title="零轴回调的展示方式">
-      <option value="chart" selected>K线图</option>
-      <option value="table">表格</option>
-    </select>
     <span id="zero-symbar" style="display:none">
-      <span class="chartsym">按<b style="color:#f0b90b">首次靠近零轴时间</b>排序 · 越早越靠前</span>
-      <select id="zero-limit" class="vtsel" title="最多展示多少张图">
+      <select id="pair-mode" class="vtsel" title="配对信号的展示方式">
+        <option value="chart" selected>K线图</option>
+        <option value="table">表格</option>
+      </select>
+      <span class="vtsep"></span>
+      <div id="pairseg-side" class="nnseg">
+        <button class="nnbtn on" data-side="all">全部</button>
+        <button class="nnbtn" data-side="long">只看多</button>
+        <button class="nnbtn" data-side="short">只看空</button>
+      </div>
+      <select id="pair-size" class="vtsel" title="每行显示几张图">
+        <option value="1">1 列（最大）</option>
+        <option value="2" selected>2 列</option>
+        <option value="3">3 列</option>
+        <option value="4">4 列</option>
+      </select>
+      <select id="zero-limit" class="vtsel" title="最多展示多少个">
         <option value="12">展示 12 个</option>
         <option value="24" selected>展示 24 个</option>
-        <option value="40">展示 40 个</option>
-        <option value="60">展示 60 个</option>
-      </select>
-      <select id="zero-size" class="vtsel" title="每张图的尺寸">
-        <option value="compact">紧凑（塞进一屏）</option>
-        <option value="normal" selected>标准</option>
-        <option value="large">大</option>
-        <option value="xl">特大</option>
+        <option value="48">展示 48 个</option>
       </select>
       <button id="zero-refresh" class="vt mini" title="立即刷新">↻</button>
+      <span id="pair-live" class="chartlive"></span>
     </span>
     <span id="chart-symbar" style="display:none">
       <span id="chart-sym" class="chartsym">—</span>
@@ -147,50 +157,37 @@
     <span id="zero-live" class="chartlive"></span>
   </div>
 
-  <div id="zero-guide" class="zero-guide">
-    <strong>独立监控：15分 · 30分 · 1小时 · 2小时 · 3小时 · 4小时 · 6小时</strong>
-    <span>按「本轮首次靠近零轴时间」从早到晚排序，越早越靠前；全部为收盘确认时间。</span>
-    <details><summary>判定口径</summary>
-      <b>多 = 靠近零轴不下穿 MACD；空 = 靠近零轴不上穿 MACD</b><br>
-      · <b>不下穿 / 不上穿</b> ＝ DIF 已经在该侧持续 ≥3 根，全程没有穿越零轴（符号没翻转）。<br>
-      · <b>靠近程度</b> ＝ |DIF| ÷ <b>本轮同侧</b>最大 |DIF|，≤ 上方所选阈值即认为已回到零轴附近。<br>
-      · 七个周期分别按自己的 DIF 判定，不要求其他周期配合，也不受配对或主级别结构限制。<br>
-      · 为什么分母只取本轮同侧：若跨到零轴另一侧取最大值，DIF 刚从 −1.0 翻到 +0.02 时
-        <span style="color:#f0b90b">会算成 0.02</span>，看着像贴到零轴了，其实是趋势刚起步。
-        只看本轮时本轮最大值就是当前值，靠近程度 = 100%，本身就否掉了。<br>
-      · 已靠近零轴 ＝ 不下穿/不上穿 ＋ 靠近程度达标 → 这时才算信号；碰到就算，不要求已经拐头。<br>
-      · 仅用已收盘 K 线；同一次靠近只记第一次；数据不足或过期的级别不入榜。
-    </details>
-  </div>
   <div id="mainbody">
   <div id="view-matrix" class="view">
-    <div id="tablewrap">
-      <table id="grid">
+    <!-- 次级别回踩 / 主级别零轴 配对监控 -->
+    <div id="pairwrap">
+      <div id="pairchartwrap">
+        <div id="pairchartgrid"></div>
+        <div id="pair-empty" class="empty" style="display:none">
+          当前没有符合条件的配对信号。条件：主级别 DIF 在零轴一侧，次级别也在同侧，
+          并且次级别已经回踩/反弹 ≥5 根。
+        </div>
+      </div>
+      <div id="pairtablewrap" style="display:none">
+      <table id="pairgrid">
         <thead>
-          <tr id="head">
+          <tr>
             <th class="c-rank">#</th>
-            <th class="c-sym sortable" data-sort="sym">币种</th>
-            <th class="c-level">独立周期</th>
+            <th class="c-sym">币种</th>
+            <th class="c-pair">配对（次→主）</th>
             <th class="c-dir">方向</th>
-            <th class="num sortable" data-sort="near">靠近零轴</th>
-            <th class="num sortable" data-sort="hold">持续根数</th>
-            <th class="num sortable" data-sort="dif">DIF</th>
-            <th class="num sortable" data-sort="dea">DEA</th>
-            <th>首次靠近时间</th>
-            <th class="c-price sortable num" data-sort="price">价格</th>
-            <th class="c-chg sortable num" data-sort="change">24h%</th>
+            <th class="num" title="主级别 DIF：多头要求 &gt; 0，空头要求 &lt; 0">主级别 DIF</th>
+            <th class="num" title="主级别 DIF 已经在零轴同侧持续多少根">主级别持续</th>
+            <th class="num" title="次级别 DIF：必须和主级别在零轴同一侧（全程没穿越）">次级别 DIF</th>
+            <th class="num" title="次级别从本轮极值回落/反弹已经过了多少根（≥5 才提醒）">回踩根数</th>
+            <th class="c-price num">价格</th>
+            <th class="c-chg num">24h%</th>
             <th class="c-vol num" title="24小时成交额（USDT）">成交额</th>
-            <th class="c-time" title="本周期收盘确认时间">确认时间</th>
+            <th class="c-time" title="次级别本根收盘时间">确认时间</th>
           </tr>
         </thead>
-        <tbody id="body"></tbody>
+        <tbody id="pairbody"></tbody>
       </table>
-      <div id="empty" class="empty">正在连接币安行情…</div>
-    </div>
-    <div id="zerochartwrap">
-      <div id="zerochartgrid"></div>
-      <div id="zero-empty" class="empty" style="display:none">
-        当前条件暂无匹配级别。可放宽靠近程度、切换方向，或减少最少匹配级别。
       </div>
     </div>
     <!-- 单K推动 + 回调不破（独立策略，只扫涨幅榜前 50）——默认平铺 K 线 -->
@@ -209,6 +206,7 @@
               <th class="c-sym">币种</th>
               <th class="c-lv">周期</th>
               <th class="c-dir">方向</th>
+              <th class="c-zero" title="那根单K发生时的 MACD DIF 在零轴的哪一侧">零轴</th>
               <th class="c-num" title="大阳线的实体涨幅">单K涨幅</th>
               <th class="c-num" title="实体相对近20根平均实体的倍数">实体放大</th>
               <th class="c-num" title="回调期间最低收盘相对大阳线收盘的回落幅度">回踩</th>
@@ -466,7 +464,8 @@
     }
     return load('./vendor/lightweight-charts.js')
       .then(function () { return load('./app.js'); })
-      .then(function () { return load('./chart.js'); });
+      .then(function () { return load('./chart.js'); })
+      .then(function () { return load('./pair.js'); });
   }).catch(fail);
 })();
 </script>

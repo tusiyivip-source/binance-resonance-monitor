@@ -173,6 +173,17 @@ async function handleRequest(req, res) {
     const limit = Math.max(1, Math.min(60, Number(url.searchParams.get('limit')) || 24));
     return json(res, engine.singleKCharts(bars, limit, Object.fromEntries(url.searchParams)));
   }
+  if (url.pathname === '/api/pairchart') {
+    const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 150));
+    const limit = Math.max(1, Math.min(60, Number(url.searchParams.get('limit')) || 24));
+    return json(res, engine.pairZeroCharts(bars, limit, Object.fromEntries(url.searchParams)));
+  }
+  if (url.pathname === '/api/pairzero') {
+    return json(res, engine.pairZeroScan(Object.fromEntries(url.searchParams)));
+  }
+  if (url.pathname === '/api/nn') {
+    return json(res, engine.nnScan(Object.fromEntries(url.searchParams)));
+  }
   if (url.pathname === '/api/zerochart') {
     const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 150));
     const limit = Math.max(1, Math.min(60, Number(url.searchParams.get('limit')) || 24));

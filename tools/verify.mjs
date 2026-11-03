@@ -8,7 +8,8 @@
  * 5) 真实行情冒烟测试
  */
 import { ZERO_LEVEL_KEYS, ZERO_PAIRS, zeroOptions, zeroMonitorAt, zeroMatches, zeroPairHit, bigCandleSupport } from '../src/zero-monitor.js';
-import { SINGLE_K_LEVELS, singleKOptions, singleKAt } from '../src/single-k.js';
+import { SINGLE_K_LEVELS, SINGLE_K_ZERO_SIDES, singleKOptions, singleKAt } from '../src/single-k.js';
+import { PAIR_ZERO_PAIRS, pairZeroOptions, levelZeroAt, pairZeroHit, comparePairZero } from '../src/pair-zero.js';
 import { CandleSeries } from '../src/series.js';
 import { memoryStorage } from '../src/file-storage.js';
 import * as CandleSeriesMod from '../src/series.js';
@@ -1636,12 +1637,119 @@ section('18. 单K推动 + 回调不破（只扫涨幅榜前 N）');
   ok('回调根数超过上限 → 拒绝', singleKAt(mkS(late), late.length - 1, opt) === null);
 
   // 参数
+  // —— 零轴位置筛选：只看「那根单K发生时」DIF 在零轴上方 / 下方 ——
+  {
+    const zFlat = Array.from({ length: 24 }, () => [1.00, 1.004, 0.998, 1.001]);
+    const zUp = zFlat.concat([
+      [1.00, 1.06, 0.995, 1.05],
+      [1.045, 1.048, 1.030, 1.032],
+      [1.032, 1.036, 1.020, 1.024],
+      [1.024, 1.028, 1.012, 1.015],
+    ]);
+    const zs = mkS(zUp);
+    const base = { singleKMinGainPct: 2, singleKMult: 1.5, singleKLookback: 20, singleKMaxAfter: 12 };
+    const oAll = singleKOptions({}, { ...base });
+    const oUp = singleKOptions({ zero: 'above' }, { ...base });
+    const oDn = singleKOptions({ zero: 'below' }, { ...base });
+
+    ok('零轴筛选参数：不限 / 零轴上 / 零轴下',
+      oAll.zeroSide === 'all' && oUp.zeroSide === 'above' && oDn.zeroSide === 'below',
+      oAll.zeroSide + ' / ' + oUp.zeroSide + ' / ' + oDn.zeroSide);
+    ok('非法零轴参数退回「不限」', singleKOptions({ zero: 'xxx' }, {}).zeroSide === 'all');
+    ok('三种零轴取值已导出',
+      JSON.stringify(SINGLE_K_ZERO_SIDES) === JSON.stringify(['all', 'above', 'below']),
+      SINGLE_K_ZERO_SIDES.join(','));
+
+    const difUp = new Float64Array(zUp.length).fill(NaN); difUp[24] = 0.01;
+    const difDn = new Float64Array(zUp.length).fill(NaN); difDn[24] = -0.01;
+    const indUp = { macd: { dif: difUp } }, indDn = { macd: { dif: difDn } };
+
+    ok('不限时，DIF 在哪一侧都命中',
+      !!singleKAt(zs, zUp.length - 1, oAll, 1, indUp) && !!singleKAt(zs, zUp.length - 1, oAll, 1, indDn));
+    ok('★ 只要零轴上：DIF 在零轴上 → 命中',
+      !!singleKAt(zs, zUp.length - 1, oUp, 1, indUp));
+    ok('★ 只要零轴上：DIF 在零轴下 → 排除',
+      singleKAt(zs, zUp.length - 1, oUp, 1, indDn) === null);
+    ok('★ 只要零轴下：DIF 在零轴下 → 命中',
+      !!singleKAt(zs, zUp.length - 1, oDn, 1, indDn));
+    ok('★ 只要零轴下：DIF 在零轴上 → 排除',
+      singleKAt(zs, zUp.length - 1, oDn, 1, indUp) === null);
+    ok('要筛选却没给指标 → 不成立（fail closed）',
+      singleKAt(zs, zUp.length - 1, oUp, 1, null) === null);
+    ok('命中结果带出 zeroSide 与 dif',
+      (() => { const h = singleKAt(zs, zUp.length - 1, oAll, 1, indUp);
+        return !!h && h.zeroSide === 'above' && Math.abs(h.dif - 0.01) < 1e-12; })());
+  }
+
+
   ok('默认监控涨幅榜前 200', DEFAULT_SIGNAL.singleKTopN === 200, 'singleKTopN=' + DEFAULT_SIGNAL.singleKTopN);
   ok('默认单K涨幅下限 2%', DEFAULT_SIGNAL.singleKMinGainPct === 2, 'singleKMinGainPct=' + DEFAULT_SIGNAL.singleKMinGainPct);
   ok('默认实体倍数 1.5', DEFAULT_SIGNAL.singleKMult === 1.5, 'singleKMult=' + DEFAULT_SIGNAL.singleKMult);
+  ok('★ 单K推送默认有 500 万 USDT 的成交额门槛',
+    DEFAULT_SIGNAL.singleKMinQuoteVolume === 5_000_000,
+    'singleKMinQuoteVolume=' + DEFAULT_SIGNAL.singleKMinQuoteVolume);
   ok('扫描级别为 15m/30m/1h/2h/3h/4h/6h',
     JSON.stringify(SINGLE_K_LEVELS) === JSON.stringify(['15m', '30m', '1h', '2h', '3h', '4h', '6h']),
     SINGLE_K_LEVELS.join(','));
+}
+
+/* ============ 19. 次级别回踩 / 主级别零轴 配对 ============ */
+section('19. 次级别回踩 / 主级别零轴 配对');
+{
+  const opt = pairZeroOptions({}, { pairZeroMinPullBars: 5, pairZeroMinMainHold: 1 });
+  ok('★ 七组配对齐全（次→主）',
+    PAIR_ZERO_PAIRS.map(p => p.sub + '-' + p.main).join(',') === '5m-30m,10m-1h,15m-2h,30m-3h,1h-6h,2h-12h,4h-1d',
+    PAIR_ZERO_PAIRS.map(p => p.sub + '→' + p.main).join(' '));
+  ok('默认回踩门槛 5 根', opt.minPullBars === 5, 'minPullBars=' + opt.minPullBars);
+
+  const mkS = n => ({ t: Array.from({ length: n }, (_, i) => i * 300000), ms: 300000,
+    o: new Float64Array(n).fill(1), h: new Float64Array(n).fill(1),
+    l: new Float64Array(n).fill(1), c: new Float64Array(n).fill(1) });
+  const mkInd = arr => ({ macd: { dif: Float64Array.from(arr), dea: Float64Array.from(arr.map(v => v * 0.9)) } });
+
+  // 次级别：35 根负数打底 → 上升到峰值(索引39) → 回落 5 根到索引 44
+  const subDif = Array.from({ length: 35 }, () => -0.1)
+    .concat([0.1, 0.5, 0.8, 1.0, 1.2, 1.0, 0.8, 0.6, 0.4, 0.3]);
+  const subS = mkS(45), subI = mkInd(subDif);
+  const subZ = levelZeroAt(subS, subI, 44);
+  ok('★ 次级别状态：同侧 + 距本轮峰值 5 根',
+    !!subZ && subZ.side === 1 && subZ.pullBars === 5,
+    subZ ? 'side=' + subZ.side + ' hold=' + subZ.hold + ' pullBars=' + subZ.pullBars : 'null');
+
+  // 主级别：一直在零轴上方
+  const mainDif = Array.from({ length: 45 }, () => 0.5);
+  const mainZ = levelZeroAt(mkS(45), mkInd(mainDif), 44);
+  ok('主级别状态：零轴上方', !!mainZ && mainZ.side === 1);
+
+  const hit = pairZeroHit(subZ, mainZ, 1, opt);
+  ok('★ 主零轴上 + 次零轴上 + 回踩 5 根 → 多头成立',
+    !!hit && hit.dir === 'long' && hit.subPullBars === 5,
+    hit ? hit.subPullBars + ' 根' : 'null');
+
+  // 回踩只有 4 根
+  const subZ4 = levelZeroAt(subS, subI, 43);
+  ok('★ 回踩不够 5 根 → 不成立',
+    pairZeroHit(subZ4, mainZ, 1, opt) === null, 'pullBars=' + subZ4.pullBars);
+
+  // 主级别在零轴下方
+  const mainDn = Array.from({ length: 45 }, () => -0.5);
+  const mainZDn = levelZeroAt(mkS(45), mkInd(mainDn), 44);
+  ok('★ 主级别在零轴下方 → 多头不成立', pairZeroHit(subZ, mainZDn, 1, opt) === null);
+  ok('★ 次级别在零轴下方 → 多头不成立', pairZeroHit(mainZDn, mainZ, 1, opt) === null);
+
+  // 空头镜像
+  const subDnDif = Array.from({ length: 35 }, () => 0.1)
+    .concat([-0.1, -0.5, -0.8, -1.0, -1.2, -1.0, -0.8, -0.6, -0.4, -0.3]);
+  const subZDn = levelZeroAt(mkS(45), mkInd(subDnDif), 44);
+  const hitS = pairZeroHit(subZDn, mainZDn, -1, opt);
+  ok('★ 主零轴下 + 次零轴下 + 反弹 5 根 → 空头成立',
+    !!hitS && hitS.dir === 'short' && hitS.subPullBars === 5,
+    hitS ? hitS.subPullBars + ' 根' : 'null');
+  ok('★ 空头：主级别在零轴上方 → 不成立', pairZeroHit(subZDn, mainZ, -1, opt) === null);
+
+  // 门槛可调
+  ok('★ 门槛可调（调到 10 根时 5 根的信号就不成立）',
+    pairZeroHit(subZ, mainZ, 1, pairZeroOptions({ pull: 10 }, {})) === null);
 }
 
 /* ============ 汇总 ============ */
