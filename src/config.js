@@ -157,7 +157,7 @@ export const DEFAULT_SIGNAL = {
   zeroMainNoDivergence: true,
 
   // —— 单K推动 + 回调不破（独立策略，只扫涨幅榜前 N 名） ——
-  singleKTopN: 200,          // 只监控涨幅榜前 200
+  singleKTopN: 500,          // 覆盖整个标的池（涨跌幅榜∪成交额榜）
   singleKMinGainPct: 2,      // 单K实体涨幅下限（%）
   singleKMult: 1.5,          // 实体 ≥ 近 N 根平均实体 × 该倍数
   singleKLookback: 20,       // 在这多少根内找那根大阳线
@@ -175,7 +175,7 @@ export const DEFAULT_SIGNAL = {
   // —— 次级别回踩 / 主级别零轴 配对策略 ——
   pairZeroMinPullBars: 5,     // 次级别回踩（反弹）至少多少根才提醒
   pairZeroMinMainHold: 1,     // 主级别 DIF 至少要在零轴同侧多少根
-  pairZeroTopN: 200,          // 只扫涨幅榜前 N
+  pairZeroTopN: 500,          // 覆盖整个标的池
   pairZeroAlertEnabled: true, // 是否推送钉钉
   pairZeroAlertStaleSec: 120, // 次级别K线收盘超过这么多秒就不再报（防重启翻存量）
   pairZeroMinQuoteVolume: 0,  // 成交额门槛（0=不限）
@@ -271,7 +271,13 @@ export const APP = {
   //   · 前 100 → 全量播种 100×12=1200 个请求 / 2400 权重，约 2.2 分钟
   //   合约官方额度 2400/分钟，自身预算 1100+突发 200=1300/分钟，
   //   所以播种会被闸门摊开到两分钟以上，不会一次打满。
-  topN: 200,
+  // 标的池 = 涨跌幅榜前 N ∪ 成交额榜前 N，按币种去重。
+  //   · 只看涨幅榜会漏掉「放量但在跌」的币，空头信号就抓不到；
+  //   · 只看成交额榜会漏掉「刚拉起来但成交额还没跟上」的小币。
+  //   两个榜各取 250，去重后通常 300~420 个（两榜重叠越多、池子越小）。
+  topN: 200,                   // 旧字段，保留兼容一些读它的地方
+  universeChangeN: 250,        // 涨跌幅榜取前 N（按 |涨跌幅| 排序，涨跌都算）
+  universeVolumeN: 250,        // 成交额榜取前 N
   candleLimit: 200,          // 默认K线根数（各级别可在 LEVELS 里单独覆盖）
   tickerRefreshMs: 60_000,   // 涨幅榜刷新
   exchangeInfoRefreshMs: 30 * 60_000,
@@ -321,3 +327,27 @@ export const EXCLUDE_BASE = new Set([
   'AEUR', 'EUR', 'GBP', 'EURI', 'PAXG', 'SUSD', 'USTC', 'UST', 'PYUSD', 'GUSD',
 ]);
 export const EXCLUDE_SYMBOL_RE = /(UP|DOWN|BULL|BEAR)USDT$/;
+
+/**
+ * 股票 / ETF / 商品类合约（TradFi）的名字特征。
+ * 正常情况下 exchangeInfo 的 contractType !== PERPETUAL 已经把它们挡掉了，
+ * 但这依赖交易所信息接口取成功：一旦取不到，tradingSymbols 为空，过滤会整体失效。
+ * 这里再用名字兜一层，保证 AAPL / HK0700 / CSOPSAMSUNG2L 这类绝不会混进来。
+ */
+export const EXCLUDE_TRADFI_RE = /^(HK\d|CSOP|KODEX)/;
+export const EXCLUDE_TRADFI_BASE = new Set([
+  // 美股 / ETF
+  "AAPL", "ABBV", "ACN", "ADBE", "AMD", "AMAT", "AMGN", "AMZN", "ANET", "ASML", "AVGO",
+  "BABA", "BAC", "BRKB", "C", "CAT", "COIN", "COST", "CRM", "CRWD", "CSCO", "CVNA", "CVX",
+  "DELL", "DIA", "DIS", "DDOG", "EBAY", "F", "GEV", "GME", "GM", "GOOGL", "GS", "HD", "HPE",
+  "HOOD", "IBKR", "INTC", "IWM", "JPM", "KLAC", "KO", "LLY", "LRCX", "MARA", "MCD", "MDB",
+  "MDT", "MELI", "META", "MRK", "MRNA", "MRVL", "MSFT", "MSTR", "MU", "NAVER", "NBIS", "NET",
+  "NFLX", "NKE", "NOW", "NVDA", "NVO", "OKLO", "ORCL", "OXY", "PANW", "PATH", "PDD", "PFE",
+  "PLTR", "PYPL", "QQQ", "RDDT", "RIVN", "RKLB", "SMCI", "SMH", "SNOW", "SNPS", "SOFI", "SONY",
+  "SOXL", "SOXS", "SPY", "SQQQ", "TQQQ", "TSLA", "TSM", "TTWO", "TXN", "UBER", "UNH", "UVXY",
+  "V", "WDC", "WMT", "XLE", "XOM", "ZM", "ZS",
+  // 韩股 / 指数
+  "SKHYNIX", "SAMSUNG", "SAMSUNGEM", "SPCX",
+  // 商品 / 外汇
+  "XAU", "XAG", "XPT", "XPD", "COPPER",
+]);

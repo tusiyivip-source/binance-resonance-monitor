@@ -673,7 +673,8 @@ export class Engine extends Emitter {
       const prev = seen.get(key);
       if (!prev || (a.ts || 0) > (prev.ts || 0)) seen.set(key, a);
     }
-    const list = [...seen.values()].sort((x, y) => (y.ts || 0) - (x.ts || 0));
+    // 时间正序：最早提醒的在前，**新产生的排到最后**（用户要求新信号落到底部）
+    const list = [...seen.values()].sort((x, y) => (x.ts || 0) - (y.ts || 0));
     const items = [];
     const cap = Math.max(1, Math.min(400, Number(limit) || 200));
     for (const a of list) {

@@ -10,6 +10,7 @@
 import { ZERO_LEVEL_KEYS, ZERO_PAIRS, zeroOptions, zeroMonitorAt, zeroMatches, zeroPairHit, bigCandleSupport } from '../src/zero-monitor.js';
 import { SINGLE_K_LEVELS, SINGLE_K_ZERO_SIDES, singleKOptions, singleKAt } from '../src/single-k.js';
 import { PAIR_ZERO_PAIRS, pairZeroOptions, levelZeroAt, pairZeroHit, comparePairZero } from '../src/pair-zero.js';
+import { APP as APP_CFG, EXCLUDE_TRADFI_RE, EXCLUDE_TRADFI_BASE } from '../src/config.js';
 import { CandleSeries } from '../src/series.js';
 import { memoryStorage } from '../src/file-storage.js';
 import * as CandleSeriesMod from '../src/series.js';
@@ -1682,7 +1683,7 @@ section('18. 单K推动 + 回调不破（只扫涨幅榜前 N）');
   }
 
 
-  ok('默认监控涨幅榜前 200', DEFAULT_SIGNAL.singleKTopN === 200, 'singleKTopN=' + DEFAULT_SIGNAL.singleKTopN);
+  ok('默认覆盖整个标的池（单K不再卡 200）', DEFAULT_SIGNAL.singleKTopN === 500, 'singleKTopN=' + DEFAULT_SIGNAL.singleKTopN);
   ok('默认单K涨幅下限 2%', DEFAULT_SIGNAL.singleKMinGainPct === 2, 'singleKMinGainPct=' + DEFAULT_SIGNAL.singleKMinGainPct);
   ok('默认实体倍数 1.5', DEFAULT_SIGNAL.singleKMult === 1.5, 'singleKMult=' + DEFAULT_SIGNAL.singleKMult);
   ok('★ 单K推送默认有 500 万 USDT 的成交额门槛',
@@ -1750,6 +1751,32 @@ section('19. 次级别回踩 / 主级别零轴 配对');
   // 门槛可调
   ok('★ 门槛可调（调到 10 根时 5 根的信号就不成立）',
     pairZeroHit(subZ, mainZ, 1, pairZeroOptions({ pull: 10 }, {})) === null);
+}
+
+/* ============ 20. 标的池 = 涨跌幅榜 ∪ 成交额榜 ============ */
+section('20. 标的池：涨跌幅榜 ∪ 成交额榜');
+{
+  ok('★ 涨跌幅榜取前 250', APP_CFG.universeChangeN === 250, 'universeChangeN=' + APP_CFG.universeChangeN);
+  ok('★ 成交额榜取前 250', APP_CFG.universeVolumeN === 250, 'universeVolumeN=' + APP_CFG.universeVolumeN);
+  ok('★ 配对/单K 不再被 200 卡住',
+    DEFAULT_SIGNAL.pairZeroTopN === 500 && DEFAULT_SIGNAL.singleKTopN === 500,
+    'pairZeroTopN=' + DEFAULT_SIGNAL.pairZeroTopN + ' singleKTopN=' + DEFAULT_SIGNAL.singleKTopN);
+
+  // 并集去重的行为：模拟两个榜
+  const chg = [{ s: 'A' }, { s: 'B' }, { s: 'C' }];
+  const vol = [{ s: 'C' }, { s: 'D' }];
+  const picked = [];
+  const seen = new Set();
+  for (const r of chg.concat(vol)) { if (seen.has(r.s)) continue; seen.add(r.s); picked.push(r); }
+  ok('并集去重：重叠的币只出现一次', picked.length === 4, picked.map(x => x.s).join(','));
+
+  ok('★ 美股代码被排除（AAPL / NVDA / TSLA）',
+    EXCLUDE_TRADFI_BASE.has('AAPL') && EXCLUDE_TRADFI_BASE.has('NVDA') && EXCLUDE_TRADFI_BASE.has('TSLA'));
+  ok('★ 港股 / 韩股 ETF 被正则排除（HK0700 / CSOPSAMSUNG2L / KODEX200）',
+    EXCLUDE_TRADFI_RE.test('HK0700') && EXCLUDE_TRADFI_RE.test('CSOPSAMSUNG2L') && EXCLUDE_TRADFI_RE.test('KODEX200'));
+  ok('★ 加密币不会被误伤（BTC / ETH / SOL / SPX）',
+    !EXCLUDE_TRADFI_BASE.has('BTC') && !EXCLUDE_TRADFI_BASE.has('ETH')
+    && !EXCLUDE_TRADFI_BASE.has('SOL') && !EXCLUDE_TRADFI_RE.test('SPX'));
 }
 
 /* ============ 汇总 ============ */

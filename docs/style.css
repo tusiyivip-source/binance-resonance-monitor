@@ -535,6 +535,8 @@ body.singlemode #singlechartgrid::-webkit-scrollbar-thumb:hover{background:#3b51
 #view-pgrid{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
 body.pgridmode #view-pgrid{display:flex}
 body.pgridmode #nnwrap,body.pgridmode #pairwrap,body.pgridmode #view-single{display:none}
+/* 全景屏占满整宽：隐藏右侧「共振报警」栏 */
+body.pgridmode #alerts{display:none}
 #pggrid{flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;display:grid;
   grid-template-columns:repeat(var(--pgcols,4),minmax(0,1fr));gap:1px;
   background:#1a2735;align-content:start;padding:1px}

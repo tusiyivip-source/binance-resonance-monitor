@@ -4,7 +4,7 @@
  *  - 3 条 WebSocket 连接共 2200 条 kline 流（币安单连接上限 1024 条）
  *  - REST 仅用于首次播种 / 定期对账，权重可忽略
  */
-import { APP, LEVELS, LEVEL_INDEX, NATIVE_LEVELS, EXCLUDE_BASE, EXCLUDE_SYMBOL_RE } from './config.js';
+import { APP, LEVELS, LEVEL_INDEX, NATIVE_LEVELS, EXCLUDE_BASE, EXCLUDE_SYMBOL_RE, EXCLUDE_TRADFI_RE, EXCLUDE_TRADFI_BASE } from './config.js';
 import { CandleSeries, parseKline, parseWsKline } from './series.js';
 import { TickFeed } from './tickfeed.js';
 // ⚠ 这里**不能** import kline-cache.js —— 那个模块用 node:fs，而 market.js 是要下发给
@@ -211,6 +211,8 @@ export class Market {
         if (EXCLUDE_SYMBOL_RE.test(t.symbol)) continue;
         const base = t.symbol.slice(0, -4);
         if (EXCLUDE_BASE.has(base)) continue;
+        // 股票 / ETF / 商品类兜底（不依赖 exchangeInfo 是否取到）
+        if (EXCLUDE_TRADFI_RE.test(base) || EXCLUDE_TRADFI_BASE.has(base)) continue;
         if (this.tradingSymbols.size && !this.tradingSymbols.has(t.symbol)) continue;
         const qv = Number(t.quoteVolume);
         if (qv < APP.minQuoteVolume) continue;
@@ -226,8 +228,25 @@ export class Market {
           tickerAt: Date.now(),
         });
       }
-      rows.sort((a, b) => b.changePct - a.changePct);
-      this.universe = rows.slice(0, APP.topN).map(r => r.symbol);
+      // —— 标的池：涨跌幅榜前 N ∪ 成交额榜前 N，按币种去重 ——
+      // 只用涨幅榜会漏掉「放量下跌」的币（空头信号全丢）；
+      // 只用成交额榜会漏掉「刚拉起来但成交额还没跟上」的币。
+      const chgN = Math.max(1, APP.universeChangeN ?? 250);
+      const volN = Math.max(1, APP.universeVolumeN ?? 250);
+      const byChange = rows.slice()
+        .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))
+        .slice(0, chgN);
+      const byVolume = rows.slice()
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, volN);
+      const picked = [];
+      const pickedSet = new Set();
+      for (const r of byChange.concat(byVolume)) {
+        if (pickedSet.has(r.symbol)) continue;
+        pickedSet.add(r.symbol);
+        picked.push(r);
+      }
+      this.universe = picked.map(r => r.symbol);
       const keep = new Set(this.universe);
 
       // 移除跌出榜单的币种
@@ -237,7 +256,7 @@ export class Market {
       // 新建/更新状态
       const fresh = [];
       let rank = 0;
-      for (const r of rows.slice(0, APP.topN)) {
+      for (const r of picked) {
         rank++;
         let st = this.symbols.get(r.symbol);
         if (!st) {

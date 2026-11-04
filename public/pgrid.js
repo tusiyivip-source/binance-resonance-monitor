@@ -17,6 +17,9 @@ const PG = {
   timer: null,
   loading: false,
   hidden: new Set(),      // 被 ✕ 关掉的面板（只在本屏隐藏）
+  // 固定只是「标记」，不会自动把卡片挪到最前；
+  // 点了刷新按钮才把这些固定的排到最前面看。
+  pinFirst: false,
 };
 
 const PG_COLORS = {
@@ -140,7 +143,9 @@ function ensurePgCards(items) {
       if (act === 'pin' && typeof togglePin === 'function') {
         togglePin(id);
         card.classList.toggle('pinned', isPinned(id));
-        loadPairGrid();
+        // 只标记，不重排也不跳位；要看到最前面请按刷新按钮
+        const btn = card.querySelector('.pg-act[data-act="pin"]');
+        if (btn) btn.title = isPinned(id) ? '已固定（点刷新按钮才会排到最前）' : '固定（点刷新按钮后置顶）';
       } else if (act === 'detail') {
         if (typeof openDetail === 'function') openDetail(card.dataset.sym);
       } else if (act === 'close') {
@@ -177,13 +182,15 @@ async function loadPairGrid() {
     let items = (d.items || []).filter(it => !PG.hidden.has(it.symbol));
     if (PG.side === 'long') items = items.filter(it => (it.pair || {}).dir === 'long');
     else if (PG.side === 'short') items = items.filter(it => (it.pair || {}).dir === 'short');
-    if (typeof sortPinnedFirst === 'function') items = sortPinnedFirst(items);
+    if (PG.pinFirst && typeof sortPinnedFirst === 'function') items = sortPinnedFirst(items);
     // 截断时保证固定的那些一定留下
     if (items.length > PG.limit) {
       const pinOf = it => (typeof pinIdOf === 'function' ? pinIdOf(it) : '');
       const keep = items.filter(it => typeof isPinned === 'function' && isPinned(pinOf(it)));
+      // 固定的不丢；不置顶时按原顺序拼接，置顶时 keep 本来就在前面
       const rest = items.filter(it => !(typeof isPinned === 'function' && isPinned(pinOf(it))));
-      items = keep.concat(rest).slice(0, Math.max(PG.limit, keep.length));
+      items = (PG.pinFirst ? keep.concat(rest) : rest.concat(keep))
+        .slice(0, Math.max(PG.limit, keep.length));
     }
     PG.items = items;
     applyPgCols();
@@ -230,7 +237,13 @@ document.addEventListener('DOMContentLoaded', () => {
     loadPairGrid();
   });
   const rf = document.querySelector('#pg-refresh');
-  if (rf) rf.addEventListener('click', () => loadPairGrid());
+  if (rf) {
+    rf.title = '刷新并把已固定的排到最前面';
+    rf.addEventListener('click', () => {
+      PG.pinFirst = true;   // 这一下才把固定项提到最前
+      loadPairGrid();
+    });
+  }
   const reset = document.querySelector('#pg-reset');
   if (reset) reset.addEventListener('click', () => { PG.hidden.clear(); loadPairGrid(); });
 });
