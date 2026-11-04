@@ -176,7 +176,9 @@ async function handleRequest(req, res) {
   if (url.pathname === '/api/pairgrid') {
     const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 120));
     const limit = Math.max(1, Math.min(400, Number(url.searchParams.get('limit')) || 200));
-    return json(res, engine.pairGridData(bars, limit));
+    // 客户端把「已固定」的面板 id 一并传上来，保证它们不会被历史清理掉
+    const pins = (url.searchParams.get('pin') || '').split(',').filter(Boolean);
+    return json(res, engine.pairGridData(bars, limit, pins));
   }
   if (url.pathname === '/api/pairchart') {
     const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 150));

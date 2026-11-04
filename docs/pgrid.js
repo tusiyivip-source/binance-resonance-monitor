@@ -167,7 +167,10 @@ async function loadPairGrid() {
   PG.loading = true;
   try {
     // 数据源是「已经推送过（已提醒）的配对信号」，不是当前实时状态
-    const q = `/api/pairgrid?bars=120&limit=${PG.limit}`;
+    // 把「已固定」的面板 id 传给服务端：即使它的报警已过期，也必须继续画出来
+    const pins = (typeof PINNED !== 'undefined' ? [...PINNED] : []).filter(x => x.startsWith('p|'));
+    const pinQ = pins.length ? '&pin=' + encodeURIComponent(pins.join(',')) : '';
+    const q = `/api/pairgrid?bars=120&limit=${PG.limit}${pinQ}`;
     const r = await fetch(q);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
@@ -175,7 +178,13 @@ async function loadPairGrid() {
     if (PG.side === 'long') items = items.filter(it => (it.pair || {}).dir === 'long');
     else if (PG.side === 'short') items = items.filter(it => (it.pair || {}).dir === 'short');
     if (typeof sortPinnedFirst === 'function') items = sortPinnedFirst(items);
-    items = items.slice(0, PG.limit);
+    // 截断时保证固定的那些一定留下
+    if (items.length > PG.limit) {
+      const pinOf = it => (typeof pinIdOf === 'function' ? pinIdOf(it) : '');
+      const keep = items.filter(it => typeof isPinned === 'function' && isPinned(pinOf(it)));
+      const rest = items.filter(it => !(typeof isPinned === 'function' && isPinned(pinOf(it))));
+      items = keep.concat(rest).slice(0, Math.max(PG.limit, keep.length));
+    }
     PG.items = items;
     applyPgCols();
     const entries = ensurePgCards(items);

@@ -664,7 +664,7 @@ export class Engine extends Emitter {
    *   pairGridData   —— 报警历史里出现过的信号（已经提醒过的那批）
    * 只读，不产生任何新报警。
    */
-  pairGridData(bars = 120, limit = 200) {
+  pairGridData(bars = 120, limit = 200, pins = []) {
     const now = Date.now();
     const seen = new Map();          // 去重：同一 (币种|配对|方向) 只留最新一条
     for (const a of this.alerts) {
@@ -696,6 +696,58 @@ export class Engine extends Emitter {
         },
       });
     }
+
+    /* 用户「固定」的面板：即使它的报警已经从历史里过期清掉，也一定要画出来，
+     * 否则钉住的图会突然消失。这里用当前行情现算一份元信息补上。 */
+    const have = new Set(items.map(it => it.symbol + '|' + it.pair.sub + '-' + it.pair.main));
+    for (const raw of (Array.isArray(pins) ? pins : [])) {
+      const parts = String(raw).split('|');
+      if (parts[0] !== 'p' || parts.length < 3) continue;
+      const sym = parts[1], pairStr = parts[2];
+      const cut = pairStr.indexOf('-');
+      if (cut <= 0) continue;
+      const sub = pairStr.slice(0, cut), main = pairStr.slice(cut + 1);
+      if (have.has(sym + '|' + sub + '-' + main)) continue;
+      const st = this.market.symbols.get(sym);
+      if (!st) continue;
+      const lvl = this.levelPayload(st, sub, bars);
+      if (!lvl) continue;
+
+      // 现算主/次级别状态（拿不到就留空，不影响画图）
+      let subZ = null, mainZ = null;
+      try {
+        const subS = st.series?.[sub], mainS = st.series?.[main];
+        const ci = s => {
+          if (!s) return -1;
+          let i = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+          while (i >= 0 && s.t[i] + s.ms > now) i--;
+          return i;
+        };
+        const a1 = ci(subS), a2 = ci(mainS);
+        if (a1 >= 35) subZ = levelZeroAt(subS, subS.ensure(), a1);
+        if (a2 >= 35) mainZ = levelZeroAt(mainS, mainS.ensure(), a2);
+      } catch { /* 忽略 */ }
+
+      const dir = (subZ && subZ.side < 0) ? 'short' : 'long';
+      const lab = k => (LEVELS.find(l => l.key === k) || {}).label || k;
+      items.push({
+        ...lvl, symbol: sym, kind: 'pair', side: dir,
+        pair: {
+          sub, main, pair: sub + '-' + main,
+          subLabel: lab(sub), mainLabel: lab(main),
+          dir, rank: st.rank ?? 0,
+          mainDif: mainZ ? mainZ.dif : null, mainHold: mainZ ? mainZ.hold : null,
+          subDif: subZ ? subZ.dif : null, subHold: subZ ? subZ.hold : null,
+          subPullBars: subZ ? subZ.pullBars : null, subPeak: subZ ? subZ.peak : null,
+          subPeakT: subZ ? subZ.peakT : null, subAt: subZ ? subZ.at : null,
+          price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+          changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+          alertedAt: null,
+          pinnedOnly: true,     // 标记：这条只是被固定，当前未必还成立
+        },
+      });
+    }
+
     return {
       generatedAt: now, total: list.length, shown: items.length,
       limit: cap, bars, items,

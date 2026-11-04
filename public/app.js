@@ -207,18 +207,17 @@ function connect() {
         beep(a.confirmed ? 'confirmed' : 'preview');
       } catch (err) { console.warn('[alert] 鸣笛失败', err); }
       try {
+        // 不再弹左侧浮层 —— 报警直接进右侧「共振报警」面板（上面 renderAlerts 已处理）。
+        // 浮层会盖住图表，用户明确要求去掉；只保留鸣笛与用户自行开启的桌面通知。
         const isDual = a.kind === 'dual';
         const tag = isDual
           ? (a.side === 'long' ? '🔴 双阴不破 · 看多' : '🟢 双阳不穿 · 看空')
           : (a.confirmed ? '✅ 共振确认' : '⚡ 共振预警');
-        const tail = signalHasScore(a) ? ` · ${a.score}分` : '';
-        toast(`<b>${base(a.symbol)}</b> ${a.levelLabel ? '· ' + a.levelLabel : ''} · ${tag}${tail}<br>
-               <span style="color:#8ba0bd;font-size:11.5px">${a.text}</span>`);
         if (notifyOn && 'Notification' in window && Notification.permission === 'granted') {
           new Notification(`${a.symbol} ${tag.replace(/[🔴🟢✅⚡]\s*/g, '')}`,
             { body: a.text, tag: a.symbol + (a.level || a.base) + a.candleT });
         }
-      } catch (err) { console.warn('[alert] 弹窗失败', err); }
+      } catch (err) { console.warn('[alert] 通知失败', err); }
     }
 
     alerts.unshift(a);

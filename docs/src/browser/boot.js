@@ -195,7 +195,8 @@ function routeApi(pathname, search) {
     case '/api/pairgrid': {
       const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 120));
       const limit = Math.max(1, Math.min(400, Number(q.get('limit')) || 200));
-      return { body: safe(() => engine.pairGridData(bars, limit), { items: [], total: 0 }) };
+      const pins = (q.get('pin') || '').split(',').filter(Boolean);
+      return { body: safe(() => engine.pairGridData(bars, limit, pins), { items: [], total: 0 }) };
     }
     case '/api/pairchart': {
       const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 150));
