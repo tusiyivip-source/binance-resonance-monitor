@@ -158,7 +158,8 @@ function ensurePgCards(items) {
     });
   }
   // DOM 顺序跟着数据走
-  PG.entries.forEach(e => grid.appendChild(e.card));
+    // 顺序变了才动 DOM（每次都 appendChild 会把滚动条顶回顶部）
+    if (typeof syncCardOrder === 'function') syncCardOrder(grid, PG.entries.map(e => e.card));
   return PG.entries;
 }
 
@@ -182,20 +183,30 @@ async function loadPairGrid() {
     let items = (d.items || []).filter(it => !PG.hidden.has(it.symbol));
     if (PG.side === 'long') items = items.filter(it => (it.pair || {}).dir === 'long');
     else if (PG.side === 'short') items = items.filter(it => (it.pair || {}).dir === 'short');
-    if (PG.pinFirst && typeof sortPinnedFirst === 'function') items = sortPinnedFirst(items);
+    // 同一张卡（pinId 相同）只保留一次，避免任何插入逻辑把列表撑大
+    if (typeof dedupeById === 'function') items = dedupeById(items);
+    // 固定的卡片**永远排在全景最上面**，不用按刷新
+    if (typeof sortPinnedFirst === 'function') items = sortPinnedFirst(items);
+    if (PG.pinFirst) {
+      // 用户按了刷新：额外把视图滚回顶部，方便直接看到固定的那几张
+      PG.pinFirst = false;
+      if (typeof setPinFirstMode === 'function') setPinFirstMode(false);
+      pinDidReorder = true;
+    }
     // 截断时保证固定的那些一定留下
     if (items.length > PG.limit) {
       const pinOf = it => (typeof pinIdOf === 'function' ? pinIdOf(it) : '');
       const keep = items.filter(it => typeof isPinned === 'function' && isPinned(pinOf(it)));
-      // 固定的不丢；不置顶时按原顺序拼接，置顶时 keep 本来就在前面
       const rest = items.filter(it => !(typeof isPinned === 'function' && isPinned(pinOf(it))));
-      items = (PG.pinFirst ? keep.concat(rest) : rest.concat(keep))
-        .slice(0, Math.max(PG.limit, keep.length));
+      items = keep.concat(rest).slice(0, Math.max(PG.limit, keep.length));
     }
     PG.items = items;
     applyPgCols();
+    const grid = document.querySelector('#pggrid');
     const entries = ensurePgCards(items);
     entries.forEach((e, i) => { if (items[i]) pgUpdateCard(e, items[i]); });
+    // 刚做过「置顶重排」：滚回顶部，否则固定的卡片在屏幕上方看不见
+    if (pinDidReorder) { pinDidReorder = false; grid.scrollTop = 0; }
     const emptyEl = document.querySelector('#pg-empty');
     if (emptyEl) emptyEl.style.display = items.length ? 'none' : '';
     const live = document.querySelector('#pg-live');
@@ -240,7 +251,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (rf) {
     rf.title = '刷新并把已固定的排到最前面';
     rf.addEventListener('click', () => {
-      PG.pinFirst = true;   // 这一下才把固定项提到最前
+      // 这一下才把固定项提到最前（同时同步到图表版的开关）
+      PG.pinFirst = true;
+      if (typeof setPinFirstMode === 'function') setPinFirstMode(true);
       loadPairGrid();
     });
   }

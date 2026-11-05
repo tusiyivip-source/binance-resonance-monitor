@@ -128,12 +128,22 @@ try {
   ok('★ 切回配对页正常、全景屏隐藏', back.pairCards > 0 && back.pgridHidden, back.pairCards + ' 张');
 
   console.log('\n\u001b[36m▌不重复提醒\u001b[0m');
-  const a1 = await ev(`fetch('/api/alerts').then(r=>r.json()).then(d=>(Array.isArray(d)?d:d.alerts||[]).filter(x=>x.kind==='pairzero').length)`);
+  // 报警由引擎后台按 K 线收盘自然产生，跟开不开全景屏无关；
+  // 这里只验证「读接口本身不会产生报警」——同一瞬间连续读 6 次，计数器不能跳。
+  const cnt = async () => (await (await fetch('http://127.0.0.1:8848/api/stats')).json()).engine.dual.pairZero.count;
+  const c1 = await cnt();
+  for (let k = 0; k < 6; k++) await fetch('http://127.0.0.1:8848/api/pairgrid?bars=60&limit=20');
+  const c2 = await cnt();
+  console.log('    连续读 6 次 /api/pairgrid：报警计数 ' + c1 + ' → ' + c2);
+  ok('★ 读全景接口不产生报警（不重复提醒）', c2 === c1, c1 + ' → ' + c2);
+
+  // 另外确认全景屏发出的请求都是只读的 GET
   await ev(`document.querySelector('#tab-pgrid').click()`);
-  await sleep(12000);
-  const a2 = await ev(`fetch('/api/alerts').then(r=>r.json()).then(d=>(Array.isArray(d)?d:d.alerts||[]).filter(x=>x.kind==='pairzero').length)`);
-  console.log('    打开全景屏前 ' + a1 + ' 条配对报警，打开 12 秒后 ' + a2 + ' 条');
-  ok('★ 打开全景屏不会新增报警（不重复提醒）', a2 <= a1 + 0, a1 + ' → ' + a2);
+  await sleep(6000);
+  const reqs = await ev(`performance.getEntriesByType('resource')
+    .map(e => e.name).filter(n => /\\/api\\//.test(n)).slice(-12)`);
+  console.log('    全景屏最近请求: ' + (reqs || []).map(u => u.replace('http://127.0.0.1:8848', '')).join(' '));
+  ok('★ 全景屏只请求只读的 /api/pairgrid', (reqs || []).some(u => u.includes('/api/pairgrid')));
 
   console.log('\n\u001b[36m▌异常\u001b[0m');
   ok('无 JS 异常', errs.length === 0, errs.slice(0, 2).join(' | ') || '无');

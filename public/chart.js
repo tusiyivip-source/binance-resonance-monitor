@@ -228,6 +228,27 @@ function currentBars(view) {
 }
 
 /* ---------------- 建图 ---------------- */
+/**
+ * 把卡片的 DOM 顺序对齐到目标顺序。
+ * 只在顺序真的不同才移动节点 —— 每轮都 appendChild 一遍会把滚动位置顶回顶部，
+ * 用户表现为「一固定页面就跳回最上面」。
+ */
+function syncCardOrder(grid, want) {
+  if (!grid || !want.length) return;
+  const have = [...grid.children];
+  let same = have.length === want.length;
+  if (same) for (let i = 0; i < want.length; i++) if (have[i] !== want[i]) { same = false; break; }
+  if (same) return;
+  const top = grid.scrollTop;
+  for (let i = 0; i < want.length; i++) {
+    const c = want[i];
+    if (grid.children[i] !== c) grid.insertBefore(c, grid.children[i] || null);
+  }
+  // 多出来的（正在被移除的）先不动，由调用方负责删
+  grid.scrollTop = top;
+  requestAnimationFrame(() => { if (grid.isConnected) grid.scrollTop = top; });
+}
+
 function buildCard() {
   const card = document.createElement('div');
   card.className = 'chartcard';
@@ -248,8 +269,9 @@ function buildCard() {
     if (!id) return;
     togglePin(id);
     card.classList.toggle('pinned', isPinned(id));
-    const view = card._view || (card.closest('.chartgrid') ? null : null);
-    if (typeof rerenderCurrentView === 'function') rerenderCurrentView();
+    // 只标记，不重排、不跳位；要看到最前面请按刷新按钮
+    const pb = card.querySelector('.pinbtn');
+    if (pb) pb.title = isPinned(id) ? '已固定（按刷新按钮才排到最前）' : '固定（按刷新按钮后置顶）';
   });
   return card;
 }
@@ -262,6 +284,8 @@ try {
   if (raw) PINNED = new Set(JSON.parse(raw));
 } catch { /* localStorage 不可用时退化为内存 */ }
 
+let pinFirstMode = false;
+let pinDidReorder = false;   // 本次刷新是否真的做过「置顶重排」   // false = 固定只标记，不改变顺序；按刷新按钮才置顶
 function isPinned(id) { return PINNED.has(id); }
 function togglePin(id) {
   if (PINNED.has(id)) PINNED.delete(id); else PINNED.add(id);
@@ -281,6 +305,79 @@ function sortPinnedFirst(items) {
   for (const it of items) (isPinned(pinIdOf(it)) ? on : off).push(it);
   return on.length ? on.concat(off) : items;
 }
+/**
+ * 让「已固定」的卡片钉在它原来的位置。
+ * 上游列表每次刷新都会插入/删除条目（新信号进榜、旧信号过期），
+ * 卡片按索引复用就会被挤得上下乱跳。这里把固定的那几张按上次的下标放回去。
+ * 如果某个固定的条目在新数据里已经没有了，就用上次的对象补回来（保证不消失）。
+ */
+function anchorPinned(prev, next) {
+  const list = Array.isArray(next) ? next.slice() : [];
+  if (!Array.isArray(prev) || !prev.length || !PINNED.size) return dedupeById(list);
+
+  // 收集「上次固定项的位置」——同一个 id 只记第一次出现，
+  // 否则一旦列表里出现过重复，这里会把同一条插进去好几次，越滚越多。
+  const anchors = [];
+  const taken = new Set();
+  prev.forEach((it, i) => {
+    const id = pinIdOf(it);
+    if (!isPinned(id) || taken.has(id)) return;
+    taken.add(id);
+    anchors.push({ id, at: i, it });
+  });
+  if (!anchors.length) return dedupeById(list);
+
+  // 先把这些固定条目从新列表里摘出来（重复的也一并摘掉）
+  const held = new Map();
+  for (let i = list.length - 1; i >= 0; i--) {
+    const id = pinIdOf(list[i]);
+    if (!taken.has(id)) continue;
+    if (!held.has(id)) held.set(id, list[i]);
+    list.splice(i, 1);
+  }
+
+  // 按上次的下标逐个插回去；新数据里没有的，用上次的对象补一次
+  anchors.sort((a, b) => a.at - b.at);
+  for (const a of anchors) {
+    const item = held.get(a.id) || a.it;
+    if (!item) continue;
+    const at = Math.max(0, Math.min(a.at, list.length));
+    list.splice(at, 0, item);
+  }
+  return dedupeById(list);
+}
+
+/** 同一张卡片（pinId 相同）只保留第一次出现，防止各种插入逻辑把列表撑大 */
+function dedupeById(items) {
+  if (!Array.isArray(items)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const it of items) {
+    const id = pinIdOf(it);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(it);
+  }
+  return out;
+}
+/**
+ * 按开关决定要不要把固定的提到最前。
+ * 注意是**一次性**：排完这一次就自动关掉开关。
+ * 否则开关会一直开着，之后每次固定新卡片都会被下一轮轮询顶到最前面。
+ */
+function applyPinOrder(items) {
+  if (!pinFirstMode) return items;
+  pinFirstMode = false;
+  if (typeof PG !== "undefined" && PG) PG.pinFirst = false;
+  pinDidReorder = true;   // 排完了，稍后把视图滚回顶部
+  return sortPinnedFirst(items);
+}
+/** 刷新按钮用：打开置顶开关（图表版和全景屏一起） */
+function setPinFirstMode(on) {
+  pinFirstMode = !!on;
+  if (typeof PG !== "undefined" && PG) PG.pinFirst = !!on;
+}
+
 /** 卡片建好后同步 pinId 与高亮状态 */
 function syncPinBadge(card, it) {
   const id = pinIdOf(it);
@@ -389,7 +486,9 @@ function ensureCards(view, items) {
     e.minutes = minutes;
     e.chart.applyOptions({ timeScale: { tickMarkFormatter: t => fmtCandleTime(t * 1000, minutes) } });
   });
-  // 关键：置顶会改变 items 顺序，但卡片 DOM 还留在原位。\n  // 按 entries 顺序重新 append，把 DOM 顺序也排好（appendChild 会移动已有节点）。\n  if (view.entries.length) view.entries.forEach(e => grid.appendChild(e.card));\n  return view.entries;
+  // 顺序变了才动 DOM；没变就别碰（每次都 appendChild 会把滚动条顶回顶部）
+  syncCardOrder(grid, view.entries.map(e => e.card));
+  return view.entries;
 }
 
 /* ---------------- 绘制 ---------------- */
@@ -682,7 +781,7 @@ document.addEventListener('visibilitychange', () => {
 function rerenderCurrentView() {
   const view = VIEWS[activeView] || (activeView === "matrix" ? VIEWS.pair : null);
   if (!view || !view.grid || !view.items) return;
-  view.items = sortPinnedFirst(view.items);
+  view.items = applyPinOrder(anchorPinned(view.items, view.items));
   ensureCards(view, view.items);
   paintView(view);
   applyCols(view);
@@ -699,10 +798,11 @@ async function refreshPairView() {
   try {
     const d = await fetchChart(view, `/api/pairchart?bars=${bars}&limit=${limit}&side=${side}`);
     if (!d) return;
-    view.items = sortPinnedFirst(d.items ?? []);
+    view.items = applyPinOrder(anchorPinned(view.items, d.items ?? []));
     ensureCards(view, view.items);
     paintView(view);
     applyCols(view);
+    if (pinDidReorder) { pinDidReorder = false; view.grid.scrollTop = 0; }
     const emptyEl = document.querySelector("#pair-empty");
     if (emptyEl) emptyEl.style.display = view.items.length ? "none" : "";
     const n = view.items.length;
@@ -727,10 +827,11 @@ async function refreshSingleView() {
     const zeroQ = document.querySelector('#single-zero')?.value || 'all';
     const d = await fetchChart(view, `/api/singlekchart?bars=${bars}&limit=${limit}&zero=${zeroQ}`);
     if (!d) return;
-    view.items = sortPinnedFirst(d.items ?? []);
+    view.items = applyPinOrder(anchorPinned(view.items, d.items ?? []));
     ensureCards(view, view.items);
     paintView(view);
     applyCols(view);
+    if (pinDidReorder) { pinDidReorder = false; view.grid.scrollTop = 0; }
     const emptyEl = document.querySelector("#single-empty");
     if (emptyEl) emptyEl.style.display = view.items.length ? "none" : "";
     const n = view.items.length;
@@ -764,6 +865,7 @@ async function refreshZeroView() {
     ensureCards(view, view.items);
     paintView(view);
     applyCols(view);
+    if (pinDidReorder) { pinDidReorder = false; view.grid.scrollTop = 0; }
     const emptyEl = document.querySelector('#zero-empty');
     if (emptyEl) emptyEl.style.display = view.items.length ? 'none' : '';
     const n = view.items.length;
@@ -789,10 +891,11 @@ async function refreshAlertView() {
   try {
     const d = await fetchChart(view, `/api/alertchart?bars=${bars}&limit=${limit}`);
     if (!d) return;
-    view.items = sortPinnedFirst(d.items ?? []);
+    view.items = applyPinOrder(anchorPinned(view.items, d.items ?? []));
     ensureCards(view, view.items);
     paintView(view);
     applyCols(view);
+    if (pinDidReorder) { pinDidReorder = false; view.grid.scrollTop = 0; }
     document.querySelector('#alert-empty').style.display = view.items.length ? 'none' : '';
     const n = view.items.length;
     const rows = view.rows ?? (n ? Math.ceil(n / (view.cols || 4)) : 0);
@@ -867,7 +970,10 @@ function initCharts() {
   on('#chart-bars', 'change', () => refreshActive());
   on('#zero-limit', 'change', () => { if (typeof loadPair === 'function') loadPair(); });
   on('#zero-size', 'change', () => { applyCols(VIEWS.zero); refreshZeroView(); });
-  on('#zero-refresh', 'click', () => { if (typeof loadPair === 'function') loadPair(); });
+  on('#zero-refresh', 'click', () => {
+    setPinFirstMode(true);   // 刷新 = 把已固定的排到最前
+    if (typeof loadPair === 'function') loadPair();
+  });
   on('#alert-limit', 'change', () => refreshAlertView());
   on('#alert-size', 'change', () => { applyCols(VIEWS.alert); refreshAlertView(); });
   ['#chart-ma', '#chart-chan', '#chart-mark', '#chart-macd'].forEach(s =>
@@ -875,7 +981,7 @@ function initCharts() {
       if (activeView === 'zero') paintView(VIEWS.zero);
       else if (activeView === 'alert') paintView(VIEWS.alert);
     }));
-  on('#alert-refresh', 'click', () => refreshAlertView());
+  on('#alert-refresh', 'click', () => { setPinFirstMode(true); refreshAlertView(); });
 
   let rt = null;
   window.addEventListener('resize', () => {

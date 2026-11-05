@@ -1119,6 +1119,8 @@ if (singleSizeSel) singleSizeSel.addEventListener('change', () => {
 });
 const singleRefreshBtn = $('#single-refresh');
 if (singleRefreshBtn) singleRefreshBtn.addEventListener('click', () => {
+  // 刷新 = 把已固定的排到最前
+  if (typeof setPinFirstMode === 'function') setPinFirstMode(true);
   if (singleModeNow() === 'table') loadSingleK(); else refreshActive();
 });
 

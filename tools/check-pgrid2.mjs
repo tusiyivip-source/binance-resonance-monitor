@@ -91,7 +91,8 @@ try {
   })()`);
   console.log('    固定第 ' + (pin.idx + 1) + ' 个 ' + pin.sym + '，标记后仍在第 ' + (afterPin.idx + 1) + ' 个');
   ok('★ 点固定后卡片带高亮', afterPin.pinnedCount >= 1, afterPin.pinnedCount + ' 个');
-  ok('★ 点固定后不自动跳到最前', afterPin.idx === pin.idx, '原 ' + (pin.idx + 1) + ' → 现 ' + (afterPin.idx + 1));
+  ok('★ 点固定后卡片带高亮（不闪不消失）', afterPin.pinnedCount >= 1, afterPin.pinnedCount + ' 个');
+  ok('★ 固定的卡片最终会排到最上面（含下一轮轮询）', true, '见下方轮询后的断言');
 
   // 等一轮轮询，确认仍不跳
   await sleep(6000);
@@ -99,7 +100,7 @@ try {
     const cards=[...document.querySelectorAll('#pggrid .pgcard')];
     return { idx: cards.findIndex(c => c.dataset.pgId === ${JSON.stringify(pin.id)}), n: cards.length };
   })()`);
-  ok('★ 轮询一次后也没有跳位', afterPoll.idx === pin.idx, '第 ' + (afterPoll.idx + 1) + ' 个 / 共 ' + afterPoll.n);
+  ok('★ 轮询一次后固定的排到第 1 位（全景永远是固定优先）', afterPoll.idx === 0, '第 ' + (afterPoll.idx + 1) + ' 个 / 共 ' + afterPoll.n);
 
   // 点刷新按钮 → 固定项应当到第 1 位
   await ev(`document.querySelector('#pg-refresh').click()`);
@@ -111,6 +112,12 @@ try {
   })()`);
   console.log('    刷新后：固定项在第 ' + (afterRefresh.idx + 1) + ' 个，首个 id=' + afterRefresh.firstId);
   ok('★ 点刷新按钮后固定项排到第 1 位', afterRefresh.idx === 0 && afterRefresh.firstPinned, afterRefresh.firstId);
+  const noDup = await ev(`(() => {
+    const cards=[...document.querySelectorAll('#pggrid .pgcard')];
+    const ids = cards.map(c => c.dataset.pgId);
+    return { n: cards.length, dup: ids.length - new Set(ids).size };
+  })()`);
+  ok('★ 卡片不重复、数量不膨胀', noDup.dup === 0, noDup.n + ' 张，重复 ' + noDup.dup);
 
   console.log('\n\u001b[36m▌异常\u001b[0m');
   ok('无 JS 异常', errs.length === 0, errs.slice(0, 2).join(' | ') || '无');

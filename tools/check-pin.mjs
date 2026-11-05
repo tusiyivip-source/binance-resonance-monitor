@@ -59,48 +59,52 @@ try {
   console.log('\n\u001b[36m▌固定第 3 张\u001b[0m');
   const pinned = await ev(`(() => {
     const cards=[...document.querySelectorAll('#pairchartgrid .chartcard')];
-    const target = cards[2];
-    // id 和 sym 都要在点击之前读，否则重绘后读到的已是别的卡片
+    const idx = Math.min(2, cards.length - 1);
+    const target = cards[idx];
+    // id / sym / idx 都要在点击之前读，否则重绘后读到的已是别的卡片
     const id = target.dataset.pinId;
     const sym = target.querySelector('.lv')?.textContent?.trim();
     target.querySelector('.pinbtn').click();
-    return { id, sym };
+    return { id, sym, idx };
   })()`);
   await sleep(2500);
   const after = await ev(`(() => {
     const cards=[...document.querySelectorAll('#pairchartgrid .chartcard')];
-    return { firstSym: cards[0]?.querySelector('.lv')?.textContent?.trim(),
-      firstSp: cards[0]?.querySelector('.sp')?.textContent?.trim(),
-      firstPinned: cards[0]?.classList.contains('pinned'),
+    const i = cards.findIndex(c => c.dataset.pinId === ${JSON.stringify(pinned.id)});
+    return { idx: i, pinned: cards[i]?.classList.contains('pinned'),
       firstId: cards[0]?.dataset.pinId,
       stored: localStorage.getItem('dsh.pinnedCards') };
   })()`);
   console.log('    固定的是: ' + pinned.sym + '  (' + pinned.id + ')');
-  console.log('    现在第 1 张: ' + after.firstSym + '  ' + after.firstSp + '  pinned=' + after.firstPinned);
+  console.log('    它在第 ' + (after.idx + 1) + ' 张，pinned=' + after.pinned + '，第 1 张仍是 ' + after.firstId);
   console.log('    localStorage: ' + after.stored);
-  ok('★ 点图钉后该卡片立刻跑到第 1 位', after.firstId === pinned.id, after.firstId);
-  ok('★ 卡片有 pinned 高亮', after.firstPinned === true);
+  ok('★ 点图钉后位置不变（不再自动跳到最前）', after.idx === pinned.idx, '原第 ' + (pinned.idx + 1) + ' → 现第 ' + (after.idx + 1));
+  ok('★ 卡片有 pinned 高亮', after.pinned === true);
   ok('★ 固定状态写进了 localStorage', (after.stored || '').includes(pinned.id), String(after.stored));
 
-  console.log('\n\u001b[36m▌刷新后仍然置顶\u001b[0m');
-  await ev(`refreshPairView()`);
-  await sleep(3000);
+  console.log('\n\u001b[36m▌按刷新按钮才置顶\u001b[0m');
+  await ev(`document.querySelector('#zero-refresh').click()`);
+  await sleep(7000);
   const again = await ev(`(() => {
     const cards=[...document.querySelectorAll('#pairchartgrid .chartcard')];
     return { firstId: cards[0]?.dataset.pinId, firstPinned: cards[0]?.classList.contains('pinned') };
   })()`);
-  ok('★ 重新拉数据后固定卡仍在第 1 位', again.firstId === pinned.id && again.firstPinned, again.firstId);
+  ok('★ 按刷新按钮后固定卡排到第 1 位', again.firstId === pinned.id && again.firstPinned, again.firstId);
 
   console.log('\n\u001b[36m▌重新载入页面仍固定\u001b[0m');
   await send('Page.reload', { ignoreCache: false });
   await sleep(22000);
   const reload = await ev(`(() => {
     const cards=[...document.querySelectorAll('#pairchartgrid .chartcard')];
-    return { firstId: cards[0]?.dataset.pinId, firstPinned: cards[0]?.classList.contains('pinned'),
+    const i = cards.findIndex(c => c.dataset.pinId === ${JSON.stringify(pinned.id)});
+    return { firstId: cards[0]?.dataset.pinId, idx: i,
+      pinned: cards[i]?.classList.contains('pinned'),
       total: cards.length };
   })()`);
-  ok('★ 刷新整页后固定卡仍在第 1 位', reload.firstId === pinned.id && reload.firstPinned,
-    reload.firstId + '（共 ' + reload.total + ' 张）');
+  // 整页刷新后 pinFirstMode 回到 false，所以位置按时间序；但「已固定」的标记必须保留
+  ok('★ 刷新整页后固定标记仍在（位置不强制置顶）',
+    reload.pinned === true && reload.idx >= 0,
+    '第 ' + (reload.idx + 1) + ' 张 / 共 ' + reload.total + ' 张，pinned=' + reload.pinned);
 
   console.log('\n\u001b[36m▌取消固定\u001b[0m');
   await ev(`(() => {

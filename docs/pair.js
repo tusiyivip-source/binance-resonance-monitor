@@ -165,5 +165,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   const rf = $('#zero-refresh');
-  if (rf) rf.addEventListener('click', () => loadPair());
+  if (rf) rf.addEventListener('click', () => {
+    if (typeof setPinFirstMode === 'function') setPinFirstMode(true);
+    loadPair();
+  });
 });
