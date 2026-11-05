@@ -37,6 +37,15 @@ function pgFmtPrice(v) {
   return '$' + n.toPrecision(4);
 }
 
+/** 成交额缩写：1.23亿 / 4560万 / 8900 */
+function pgFmtVol(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  if (n >= 1e8) return (n / 1e8).toFixed(2) + '亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(0) + '万';
+  return String(Math.round(n));
+}
+
 /* ---------------- 面板 ---------------- */
 function buildPgCard() {
   const card = document.createElement('div');
@@ -78,7 +87,8 @@ function pgUpdateCard(e, it) {
   pctEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
   pctEl.className = 'pg-pct ' + (pct >= 0 ? 'up' : 'dn');
   card.querySelector('.pg-info').innerHTML =
-    `<span class="pg-pair">${pr.subLabel}→${pr.mainLabel}</span>`
+    `<span class="pg-vol" title="24小时成交额">额 ${pgFmtVol(pr.quoteVolume)}</span>`
+    + `<span class="pg-pair">${pr.subLabel}→${pr.mainLabel}</span>`
     + `<span class="pg-dir ${up ? 'up' : 'dn'}">${up ? '看多' : '看空'}</span>`
     + `<span>${up ? '回踩' : '反弹'} <b>${pr.subPullBars}</b> 根</span>`
     + `<span title="主级别 DIF">主 ${Number(pr.mainDif).toPrecision(3)}</span>`

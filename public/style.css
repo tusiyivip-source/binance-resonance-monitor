@@ -564,4 +564,5 @@ body.pgridmode #alerts{display:none}
 .pg-info{display:flex;gap:7px;overflow:hidden;text-overflow:ellipsis;margin-left:auto}
 .pg-info b{color:#f0b90b;font-weight:600}
 .pg-pair{color:#8ba0bd}
+.pg-vol{color:#f0b90b;font-variant-numeric:tabular-nums}
 .pg-dir.up{color:#f6465d}.pg-dir.dn{color:#0ecb81}

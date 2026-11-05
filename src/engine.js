@@ -693,6 +693,7 @@ export class Engine extends Emitter {
           subDif: a.subDif, subHold: a.subHold,
           subPullBars: a.subPullBars, subPeak: a.subPeak, subPeakT: null, subAt: a.candleT,
           price: a.price, changePct: a.changePct,
+          quoteVolume: Math.round(st.quoteVolume ?? 0),   // 24h 成交额（实时取，不用报警里那份旧的）
           alertedAt: a.ts,
         },
       });
@@ -743,6 +744,7 @@ export class Engine extends Emitter {
           subPeakT: subZ ? subZ.peakT : null, subAt: subZ ? subZ.at : null,
           price: Math.round((st.price ?? 0) * 1e8) / 1e8,
           changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+          quoteVolume: Math.round(st.quoteVolume ?? 0),   // 24h 成交额
           alertedAt: null,
           pinnedOnly: true,     // 标记：这条只是被固定，当前未必还成立
         },
