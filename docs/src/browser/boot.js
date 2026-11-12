@@ -239,6 +239,8 @@ function routeApi(pathname, search) {
           axis: q.get('axis') || undefined,
           surge: q.get('surge') || undefined,
           vol: q.get('vol') || undefined,
+          cover: q.get('cover') || undefined,
+          look: q.get('look') || undefined,
         }), { items: [], total: 0, shown: 0 }) };
       }
       case '/api/pairreb': {

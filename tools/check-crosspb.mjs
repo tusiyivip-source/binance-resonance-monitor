@@ -34,7 +34,7 @@ try {
 
   const tabs = await ev(`[...document.querySelectorAll('button[id^="tab-"]')].map(b => b.textContent.trim())`);
   console.log('  标签: ' + tabs.join(' | '));
-  ok('★ 「金叉回踩」标签已加上', tabs.some(t => t.includes('金叉回踩')), tabs.length + ' 个');
+  ok('★ 「阳包阴回踩」标签已加上', tabs.some(t => t.includes('阳包阴')), tabs.length + ' 个');
 
   await ev(`document.querySelector('#tab-cg').click()`);
   await sleep(16000);
@@ -59,9 +59,9 @@ try {
   ok('★ 卡片渲染', r.n > 0 && r.named === r.n, r.named + '/' + r.n);
   ok('★ 显示级别', /(15分|30分|1时|2时|3时|6时|12时)/.test(r.first), r.first);
   ok('★ 显示零轴上/下金叉筛选结果', /零轴上|零轴下|跨零轴/.test(r.first), r.first);
-  ok('★ 显示回踩根数', /回踩 \d+ 根|反弹 \d+ 根/.test(r.first), r.first);
+  ok('★ 显示触发方式（包覆当根 / 回踩N根）', /包覆当根|当根|回踩 \d+ 根|反弹 \d+ 根/.test(r.first), r.first);
   ok('★ 零轴筛选栏 3 个按钮', r.axisBtns === 3, String(r.axisBtns));
-  ok('★ 回踩根数筛选栏 2 个按钮', r.depthBtns === 2, String(r.depthBtns));
+  ok('★ 回踩根数筛选栏 3 个按钮（当根/1根/2根）', r.depthBtns === 3, String(r.depthBtns));
 
   // 切到「回踩 2 根」
   await ev(`document.querySelector('#cg-depth [data-depth="2"]').click()`);
@@ -69,7 +69,7 @@ try {
   const r2 = await ev(`(() => {
     const cards=[...document.querySelectorAll('#cggrid .pgcard')];
     const infos = cards.map(c => (c.querySelector('.pg-info')?.textContent||''));
-    return { n: cards.length, all2: infos.every(t => /(回踩|反弹) 2 根/.test(t)), sample: infos[0]?.replace(/\\s+/g,' ').trim() };
+    return { n: cards.length, all2: infos.every(t => /回踩 2 根/.test(t)), sample: infos[0]?.replace(/\\s+/g,' ').trim() };
   })()`);
   console.log('  回踩2根: ' + r2.n + ' 张  ' + (r2.sample||''));
   ok('★ 切到「回踩 2 根」全部生效', r2.n > 0 && r2.all2, r2.n + ' 张');

@@ -225,6 +225,8 @@ async function handleRequest(req, res) {
           axis: url.searchParams.get('axis') || undefined,
           surge: url.searchParams.get('surge') || undefined,
           vol: url.searchParams.get('vol') || undefined,
+          cover: url.searchParams.get('cover') || undefined,
+          look: url.searchParams.get('look') || undefined,
         }));
       }
       if (url.pathname === '/api/pairreb') {

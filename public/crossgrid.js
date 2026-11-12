@@ -1,4 +1,4 @@
-/* 「金叉回踩」屏：多级别 + 金叉后回踩阴线提醒。卡片样式复用 pgrid.js 的 buildPgCard()。 */
+/* 「阳线反包」屏：多级别 + 反包后回踩阴线提醒。卡片样式复用 pgrid.js 的 buildPgCard()。 */
 'use strict';
 
 const LV_LABEL = { '15m': '15分', '30m': '30分', '1h': '1小时', '2h': '2小时', '3h': '3小时', '6h': '6小时', '12h': '12小时' };
@@ -7,7 +7,7 @@ const CG = {
   cols: 4,
   limit: 200,
   axis: 'all',      // all | above | below
-  depth: 1,         // 1 | 2 根回踩
+  depth: 0,         // 0=包覆当根 | 1 | 2 根回踩
   level: 'all',     // all | 15m | 30m | ...
   items: [],
   entries: [],
@@ -39,9 +39,10 @@ function cgUpdateCard(e, it) {
     `<span class="pg-vol" title="24小时成交额">额 ${pgFmtVol(pr.quoteVolume)}</span>`
     + `<span class="pg-pair">${pr.levelLabel || pr.subLabel || pr.sub}</span>`
     + `<span class="pg-dir ${up ? 'up' : 'dn'}">${up ? '看多' : '看空'}</span>`
-    + `<span class="cg-axis ${pr.axisSide}" title="交叉那一刻 DIF 在零轴哪一侧">${axisTxt}${up ? '金叉' : '死叉'}（DIF ${Number(pr.crossDif).toPrecision(3)}）</span>`
-    + `<span class="cg-depth">${up ? '回踩' : '反弹'} ${pr.depth} 根</span>`
-    + (pr.surge ? `<span class="cg-surge" title="金叉后那根放量拉升的阳线">放量 +${pr.surge.gainPct}%（量 ${pr.surge.volRatio}×）</span>` : '')
+    + `<span class="cg-axis ${pr.axisSide}" title="反包那一刻 DIF 在零轴哪一侧">${axisTxt}（DIF ${Number(pr.crossDif).toPrecision(3)}）</span>`
+    + `<span class="cg-engulf">${pr.variantLabel || '反包'}</span>`
+    + `<span class="cg-depth">${pr.depthLabel || ('回踩 ' + pr.depth + ' 根')}</span>`
+    + (pr.surge ? `<span class="cg-surge" title="包覆那根的放量程度">放量 ${pr.surge.gainPct >= 0 ? '+' : ''}${pr.surge.gainPct}%（量 ${pr.surge.volRatio}×）</span>` : '')
     + `<span title="交叉那一刻">DIF ${Number(pr.crossDif).toPrecision(3)} / DEA ${Number(pr.crossDea).toPrecision(3)}</span>`;
 
   const cs = it.candles;
@@ -90,7 +91,7 @@ function cgUpdateCard(e, it) {
   const ct = pr.crossT ? Math.floor(pr.crossT / 1000) : null;
   const firstT = cs.length ? T(0) : 0, lastT = cs.length ? T(cs.length - 1) : 0;
   if (ct && ct >= firstT && ct <= lastT) {
-    markers.push({ time: ct, position: up ? 'belowBar' : 'aboveBar', color: '#f0b90b', shape: up ? 'arrowUp' : 'arrowDown', text: up ? '金叉' : '死叉' });
+    markers.push({ time: ct, position: 'aboveBar', color: '#f0b90b', shape: 'square', text: '反包' });
   }
   e.candle.setMarkers(markers.sort((a, b) => a.time - b.time));
 }
@@ -169,7 +170,7 @@ async function loadCrossPb() {
     if (live) {
       live.textContent = items.length
         ? `共 ${d.total} 条（多 ${d.longs} / 空 ${d.shorts}）· 展示 ${items.length} 张`
-          + ` · ${(d.options || {}).depth ?? 1} 根回踩`
+          + ` · ${(d.options || {}).depth === 0 ? '包覆当根' : ((d.options || {}).depth ?? 0) + ' 根回踩'}`
           + ` · ${(d.options || {}).level === 'all' ? '全部级别' : (LV_LABEL[(d.options || {}).level] || (d.options || {}).level || '')}`
           + ` · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`
         : '暂无符合条件的信号';
@@ -208,7 +209,7 @@ function stopCgPoll() {
   if (depthSeg) depthSeg.addEventListener('click', ev => {
     const b = ev.target.closest('[data-depth]');
     if (!b) return;
-    CG.depth = Number(b.dataset.depth) || 1;
+    CG.depth = Number(b.dataset.depth);   // 0 也要能选中
     [...depthSeg.querySelectorAll('[data-depth]')].forEach(x => x.classList.toggle('on', x === b));
     loadCrossPb();
   });

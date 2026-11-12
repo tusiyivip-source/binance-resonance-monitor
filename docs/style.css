@@ -572,6 +572,7 @@ body.cgmode #alerts{display:none}
 .cg-axis.below{color:#f0b90b}
 .cg-depth{color:#4aa8ff}
 .cg-surge{color:#f6465d}
+.cg-engulf{color:#f0b90b}
 /* 两套策略的变体标签 */
 .pg-variant{border-radius:3px;padding:0 4px;font-size:10px}
 .pg-variant.v-first{background:rgba(240,185,11,.16);color:#f0b90b}

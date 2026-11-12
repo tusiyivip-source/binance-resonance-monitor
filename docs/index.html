@@ -94,7 +94,7 @@
     <button id="tab-pgrid" class="vt">▦ 配对全景</button>
     <button id="tab-rev" class="vt">🔔 报警级别K线</button>
     <button id="tab-half" class="vt">🎯 背驰50%</button>
-    <button id="tab-cg" class="vt">🔁 金叉回踩</button>
+    <button id="tab-cg" class="vt">🔁 阳包阴回踩</button>
     <span class="vtsep"></span>
     <span id="zero-symbar" style="display:none">
       <select id="pair-mode" class="vtsel" title="配对信号的展示方式">
@@ -153,7 +153,8 @@
         <option value="12h">12小时</option>
       </select>
       <div id="cg-depth" class="nnseg">
-        <button class="nnbtn on" data-depth="1">回踩 1 根</button>
+        <button class="nnbtn on" data-depth="0">包覆当根</button>
+        <button class="nnbtn" data-depth="1">回踩 1 根</button>
         <button class="nnbtn" data-depth="2">回踩 2 根</button>
       </div>
       <select id="cg-limit" class="vtsel" title="显示多少个面板">

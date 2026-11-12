@@ -977,7 +977,7 @@ export class Engine extends Emitter {
             axisSide: hit.axisSide, depth: hit.depth,
             barsSinceCross: hit.barsSinceCross, pullFirst: hit.pullFirst, surge: hit.surge,
             open: hit.open, close: hit.close, pivot: hit.pivot,
-            variant: hit.variant, variantLabel: hit.variantLabel,
+            variant: hit.variant, variantLabel: hit.variantLabel, depthLabel: hit.depthLabel,
             price: Math.round((st.price ?? 0) * 1e8) / 1e8,
             changePct: Math.round((st.changePct ?? 0) * 100) / 100,
             quoteVolume: Math.round(st.quoteVolume ?? 0),
