@@ -19,11 +19,28 @@ export class TokenBucket {
       this.last = now;
     }
   }
-  /** 阻塞直到可以取走 n 个令牌 */
-  async take(n = 1) {
+  /**
+   * 阻塞直到可以取走 n 个令牌。
+   *
+   * @param {number} n 需要多少权重
+   * @param {boolean} priority 高优先级（榜单 / 清单这类「每分钟必须跑一次」的请求）。
+   *
+   * ⚠ 为什么要 priority：
+   *   令牌桶是纯竞争式的 —— 播种（几百个 5 权重的K线请求）会持续把小额权重取走，
+   *   一次要 40 权重的大请求就可能**永远凑不齐**（每次刚攒到一点又被取走）。
+   *   实测表现为「榜单请求开始」之后再也不返回，标的池几十分钟不刷新。
+   *   高优先级请求最多等 2 秒，之后就允许透支一点点先发出去 ——
+   *   权重只有 40，透支 40 对 2400 的上限来说完全安全。
+   */
+  async take(n = 1, priority = false) {
+    const deadline = priority ? Date.now() + 2000 : Infinity;
     for (;;) {
       this._refill();
       if (this.tokens >= n) { this.tokens -= n; return; }
+      if (priority && Date.now() >= deadline) {
+        this.tokens -= n;          // 允许透支，保证不被饿死
+        return;
+      }
       const need = (n - this.tokens) / this.rate;
       await sleep(Math.max(5, Math.min(need, 500)));
     }
@@ -67,14 +84,35 @@ export class RestClient {
 
   rotateHost() { this.hostIndex++; }
 
-  _acquireSlot() {
-    if (this.active < APP.concurrency) { this.active++; return Promise.resolve(); }
-    return new Promise(res => this.queue.push(res));
+  /**
+   * 占用一个并发槽位。priority=true 时插到队头。
+   * 播种会把队列塞满上百个 K 线请求，榜单/清单这类「每分钟必须跑一次」的
+   * 请求如果老老实实排队，会被饿到分钟级甚至更久（表现为榜单再也不刷新）。
+   */
+  _acquireSlot(priority = false) {
+    if (this.active < APP.concurrency) { this.active++; this._syncGate(); return Promise.resolve(); }
+    return new Promise(res => {
+      const wrapped = () => { res(); };
+      priority ? this.queue.unshift(wrapped) : this.queue.push(wrapped);
+      this._syncGate();
+    });
   }
   _releaseSlot() {
     const next = this.queue.shift();
     if (next) next();
     else this.active--;
+    this._syncGate();
+  }
+  /** 把槽位状态镜像到 stats，便于排查「请求发出去不回来」这类卡死 */
+  _syncGate() {
+    this.stats.active = this.active;
+    this.stats.queue = this.queue.length;
+    // 令牌桶诊断：tokens 长期为负说明有请求靠透支在跑（会冲破预算）
+    if (this.bucket) {
+      this.stats.tokens = Math.round(this.bucket.tokens);
+      this.stats.ratePerMin = Math.round(this.bucket.rate * 60_000);
+      this.stats.bucketMax = this.bucket.max;
+    }
   }
 
   /**
@@ -113,8 +151,8 @@ export class RestClient {
         continue;
       }
 
-      await this.bucket.take(weight);
-      await this._acquireSlot();
+      await this.bucket.take(weight, !!opts.priority);
+      await this._acquireSlot(!!opts.priority);
       const t0 = Date.now();
       try {
         const ctl = new AbortController();

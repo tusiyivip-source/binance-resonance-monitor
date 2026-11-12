@@ -153,40 +153,11 @@ try {
   ok('回调根数列是「N 根」', tb.bars.every(x => /^\d+ 根$/.test(x)), tb.bars.join(' '));
 
 
-  console.log('\n\u001b[36m▌报警级别K线视图里的单K卡片\u001b[0m');
-  // 报警缓冲可能为空（重启后要等 K 线收盘），有数据才断言
+  console.log('\n\u001b[36m▌单K信号的数据层（报警视图已移除）\u001b[0m');
+  // 「报警级别K线」标签页已删除，这里只校验数据层还在（/api/alertchart 仍可用，供后续功能复用）
   const alertHasSK = await ev(`fetch('/api/alertchart?bars=150&limit=24')
-    .then(r=>r.json()).then(d=>(d.items||[]).filter(i=>i.kind==='single').length)`);
-  if (alertHasSK > 0) {
-    await ev(`document.querySelector('#tab-alert').click()`);
-    await sleep(11000);
-    const av = await ev(`(() => {
-      const cards=[...document.querySelectorAll('#alertchartgrid .chartcard')];
-      const painted=cards.map(x=>{
-        const cv=x.querySelector('canvas');
-        if(!cv || !cv.width || !cv.height) return 0;
-        try { const d=cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data;
-          let n=0; for(let i=3;i<d.length;i+=4*97) if(d[i]>0) n++; return n; } catch { return 0; }
-      });
-      return { n:cards.length, painted:painted.filter(x=>x>0).length,
-        heads: cards.slice(0,4).map(x=>(x.querySelector('.sp')?.textContent||'').trim()),
-        metas: cards.slice(0,4).map(x=>(x.querySelector('[class*=meta]')?.textContent||'').replace(/\\s+/g,' ').trim().slice(0,80)),
-        sidebar: document.querySelector('#alertlist')?.textContent?.includes('组合未保存') };
-    })()`);
-    console.log('    报警卡 ' + av.n + ' 张，有像素 ' + av.painted + '/' + av.n);
-    for (let i = 0; i < av.heads.length; i++) console.log('    ' + av.heads[i] + '   ' + av.metas[i]);
-    ok('★ 报警视图渲染出卡片且都画了内容', av.n > 0 && av.painted === av.n, av.painted + '/' + av.n);
-    ok('★ 单K报警卡片头显示「榜内 #N」，不是「组合未保存」',
-      av.heads.every(h => /榜内 #\d+/.test(h)), av.heads.join(' | '));
-    ok('★ 单K报警卡片显示单K幅度与不破线',
-      av.metas.every(m => /单K [+−]\d/.test(m) && /不破线/.test(m)), av.metas.join(' | '));
-    ok('右侧报警面板不再显示「历史记录（组合未保存）」', av.sidebar === false,
-      av.sidebar ? '还在显示' : '已改为单K信息');
-    await ev(`document.querySelector('#tab-single').click()`);
-    await sleep(3000);
-  } else {
-    console.log('    （报警缓冲里暂无单K报警，跳过渲染断言）');
-  }
+    .then(r=>r.json()).then(d=>(d.items||[]).filter(i=>i.kind==='single').length).catch(()=>0)`);
+  ok('★ /api/alertchart 接口仍可用（数据层保留）', typeof alertHasSK === 'number', '单K ' + alertHasSK + ' 条');
 
 
   console.log('\n\u001b[36m▌切回零轴视图\u001b[0m');

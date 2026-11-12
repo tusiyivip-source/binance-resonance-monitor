@@ -163,7 +163,11 @@ export const DEFAULT_SIGNAL = {
   singleKLookback: 20,       // 在这多少根内找那根大阳线
   singleKMaxAfter: 12,       // 回调最多持续多少根（超过视为过期）
   // 单K信号是否推送钉钉
-  singleKAlertEnabled: false,  // 推送已切到「次级别回踩 / 主级别零轴」配对
+  // 只要做多的「单K不破」，去掉空的「反弹」那一支
+  // 「一阳穿三阴」：下跌段至少几根（含最近三根阴线）
+  singleKMinDownBars: 5,
+  singleKLongOnly: true,
+  singleKAlertEnabled: false,  // 单K停推 —— 钉钉只留配对全景
   // 当前K线收盘超过这么多秒就不再报警（防重启后把存量一次性推出去）
   singleKAlertStaleSec: 120,
   // 成交额门槛：24H 成交额低于此值（USDT）就不推送钉钉（表格里仍然显示）。
@@ -173,14 +177,23 @@ export const DEFAULT_SIGNAL = {
   singleKZeroSide: 'all',
 
   // —— 次级别回踩 / 主级别零轴 配对策略 ——
+  // 「背驰 50%」策略：次级别 → 主级别
+  halfMinBars: 5,          // 最后一笔高低点之间至少几根K线
+  halfMinPullBars: 5,      // 次级别回调/反弹至少几根
+  halfTopN: 500,
+  pairReboundMinPullBars: 5,   // 反转提醒：回踩至少 5 根
+  pairReboundTopN: 500,
   pairZeroMinPullBars: 5,     // 次级别回踩（反弹）至少多少根才提醒
   pairZeroMinMainHold: 1,     // 主级别 DIF 至少要在零轴同侧多少根
   pairZeroTopN: 500,          // 覆盖整个标的池
-  pairZeroAlertEnabled: true, // 是否推送钉钉
+  // 「零轴上死叉 → 阳K站上 MA5」：死叉后至少几根
+deadMa5MinBars: 5,
+deadMa5TopN: 500,
+  pairZeroAlertEnabled: true,  // 钉钉只推「配对全景」的信号
   pairZeroAlertStaleSec: 120, // 次级别K线收盘超过这么多秒就不再报（防重启翻存量）
   pairZeroMinQuoteVolume: 0,  // 成交额门槛（0=不限）
   // 零轴配对信号是否推送钉钉（true=推送）
-  zeroAlertEnabled: false,   // 零轴配对推送已停用（改推单K回踩不破）
+  zeroAlertEnabled: false,   // 零轴配对推送停用
   // 次级别K线收盘超过这么多秒就不再报警（防重启后把存量一次性推出去）
   zeroMaxStaleSec: 120,
   // 左侧「大级别推动K线 + 回调不破」结构：

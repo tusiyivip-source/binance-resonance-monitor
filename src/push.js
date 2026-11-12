@@ -365,7 +365,7 @@ export function formatAlerts(alerts, { test = false, keyword = '' } = {}) {
   let head;
   if (test) head = '🧪 钉钉推送测试';
   else if (only === 'pair') head = `🔔 配对信号 ×${nPair}`;
-  else if (only === 'single') head = `🔔 单K回踩不破 ×${nSingle}`;
+  else if (only === 'single') head = `🔔 一阳穿三阴 ×${nSingle}`;
   else if (only === 'zero') head = `🔔 零轴配对信号 ×${nZero}`;
   else if (only === 'dual') head = `🔔 形态提醒 ×${nDual}` + (nTop || nTail ? `（前段 ${nTop} · 后段 ${nTail}）` : '');
   else head = `🔔 盯盘信号 ×${alerts.length}`;
@@ -381,36 +381,49 @@ export function formatAlerts(alerts, { test = false, keyword = '' } = {}) {
           if (a.kind === 'dual') return `${a.side === 'long' ? '🔴' : '🟢'} ${a.symbol} ${a.levelLabel ?? ''} ${a.side === 'long' ? '看多' : '看空'}`;
           return `${a.confirmed ? '✅' : '⚡'} ${a.symbol} ${a.score}分 ${a.base}→${a.mid}→${a.big}`;
         })()
-      : (only === 'pair' ? `配对 ×${nPair}` : only === 'single' ? `单K ×${nSingle}` : only === 'zero' ? `零轴配对 ×${nZero}` : only === 'dual' ? `形态提醒 ×${nDual}` : `信号 ×${alerts.length}`)));
+      : (only === 'pair' ? `配对 ×${nPair}` : only === 'single' ? `一阳穿三阴 ×${nSingle}` : only === 'zero' ? `零轴配对 ×${nZero}` : only === 'dual' ? `形态提醒 ×${nDual}` : `信号 ×${alerts.length}`)));
 
   const lines = [`### ${head}`, ''];
   const footer = () => { if (!test) lines.push('---', '来源：币安多级别共振盯盘系统'); };
 
-  // —— ⓪ 配对信号：次级别回踩 / 主级别零轴 ——
+  // —— ⓪ 配对全景的信号（两套策略并列）——
+  //   A 连跌N根·首次收阳  /  B 零上死叉·阳收MA5
   if (nPair) {
     const pz = alerts.filter(a => a.kind === 'pairzero')
-      .sort((x, y) => (x.subPullBars ?? 0) - (y.subPullBars ?? 0) || String(x.symbol).localeCompare(String(y.symbol)));
-    if (only !== 'pair') { lines.push(`#### ◎ 配对信号（次级别回踩 / 主级别零轴）　×${nPair}`); lines.push(''); }
+      .sort((x, y) => String(x.variant || '').localeCompare(String(y.variant || ''))
+        || (x.level || '').localeCompare(y.level || '')
+        || String(x.symbol).localeCompare(String(y.symbol)));
+    if (only !== 'pair') { lines.push(`#### ◎ 配对全景信号　×${nPair}`); lines.push(''); }
     pz.forEach((a, i) => {
-      const up = a.side === 'long';
-      lines.push(`**${i + 1}. ${a.symbol}**　${a.subLabel} → ${a.mainLabel}　${up ? '看多' : '看空'}　榜内 #${a.rank ?? '—'}`);
-      lines.push(`> 主级别 DIF ${Number(a.mainDif).toPrecision(3)}（零轴${up ? '上' : '下'}，持续 ${a.mainHold} 根）`);
-      lines.push(`> ${a.subLabel} ${up ? '回踩' : '反弹'} ${a.subPullBars} 根，仍在零轴${up ? '上' : '下'}（DIF ${Number(a.subDif).toPrecision(3)}）`);
+      const lvl = a.levelLabel || a.subLabel || a.level || '—';
+      const tag = a.variantLabel || (a.variant === 'state' ? '零上死叉·阳收MA5' : '首次收阳');
+      lines.push(`**${i + 1}. ${a.symbol}**　${lvl}　看多　【${tag}】　榜内 #${a.rank ?? '—'}`);
+      lines.push(`> 零轴上死叉　DIF ${Number(a.deadDif ?? 0).toPrecision(3)} / DEA ${Number(a.deadDea ?? 0).toPrecision(3)}`);
+      if (a.variant === 'state') {
+        lines.push(`> 当前 DIF ${Number(a.dif ?? 0).toPrecision(3)}　柱 ${Number(a.hist ?? 0).toPrecision(3)}　阳线收 ${a.close} 站上 MA5 ${Number(a.ma5 ?? 0).toPrecision(3)}`);
+      } else {
+        lines.push(`> 死叉后连跌 ${a.downBars ?? '—'} 根　首次收阳 ${a.close}　MA5 ${Number(a.ma5 ?? 0).toPrecision(3)}`);
+      }
       lines.push(`> 现价 ${a.price}　|　24h ${Number(a.changePct) >= 0 ? '+' : ''}${Number(a.changePct).toFixed(2)}%　|　${hhmm(a.ts)}`);
       lines.push('');
     });
   }
-  // —— ⓪ 单K回踩不破 ——
+
+  // —— ⓪ 一阳穿三阴 ——
   // 每条的看点是「推动有多强 + 回调有多浅 + 不破线在哪」，三样都要写清楚。
   if (nSingle) {
     const sk = alerts.filter(a => a.kind === 'singlek')
       .sort((x, y) => (y.bigT ?? 0) - (x.bigT ?? 0) || (y.bodyPct ?? 0) - (x.bodyPct ?? 0));
-    if (only !== 'single') { lines.push(`#### ◎ 单K回踩不破　×${nSingle}`); lines.push(''); }
+    if (only !== 'single') { lines.push(`#### ◎ 一阳穿三阴　×${nSingle}`); lines.push(''); }
     sk.forEach((a, i) => {
       const up = a.side === 'long';
       lines.push(`**${i + 1}. ${a.symbol}**　${a.levelLabel ?? a.level}　${up ? '看多' : '看空'}　榜内 #${a.rank ?? '—'}`);
-      lines.push(`> 单K ${up ? '+' : '−'}${Number(a.bodyPct ?? 0).toFixed(2)}%（实体放大 ${Number(a.mult ?? 0).toFixed(1)} 倍）`);
-      lines.push(`> ${up ? '回踩' : '反抽'} ${Number(a.retracePct ?? 0).toFixed(2)}%（${a.barsAfter ?? '—'} 根）　|　不破线 ${a.line ?? '—'}　|　现价 ${a.price}`);
+      lines.push(`> 阳线 +${Number(a.bodyPct ?? 0).toFixed(2)}%（实体放大 ${Number(a.mult ?? 0).toFixed(1)} 倍）`);
+      lines.push(`> 下跌 ${a.barsAfter ?? '—'} 根　|　穿透 ${Number(a.retracePct ?? 0).toFixed(2)}%　|　三阴最高开 ${a.line ?? '—'}　|　收盘 ${a.close ?? a.price}`);
+      // 上级确认：例如 2 时必须金叉同向才推
+      if (a.confirm) {
+        lines.push(`> 确认 ${a.confirm.label} ${a.confirm.cross} ✓ 同向　|　DIF ${Number(a.confirm.dif).toPrecision(3)} / DEA ${Number(a.confirm.dea).toPrecision(3)}`);
+      }
       lines.push(`> ${hhmm(a.ts)}`);
       lines.push('');
     });

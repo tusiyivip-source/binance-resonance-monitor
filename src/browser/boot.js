@@ -220,6 +220,37 @@ function routeApi(pathname, search) {
       const limit = Math.max(1, Math.min(60, Number(q.get('limit')) || 24));
       return { body: safe(() => engine.alertCharts(bars, limit), { items: [], total: 0, shown: 0 }) };
     }
+      case '/api/chanhalf': {
+        const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 120));
+        const limit = Math.max(1, Math.min(400, Number(q.get('limit')) || 200));
+        return { body: safe(() => engine.chanHalfCharts(bars, limit, {
+          axis: q.get('axis') || undefined,
+          mode: q.get('mode') || undefined,
+          minBars: q.get('minBars') || undefined,
+          minPullBars: q.get('minPullBars') || undefined,
+        }), { items: [], total: 0, shown: 0 }) };
+      }
+      case '/api/crosspb': {
+        const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 120));
+        const limit = Math.max(1, Math.min(400, Number(q.get('limit')) || 200));
+        return { body: safe(() => engine.crossPullbackCharts(bars, limit, {
+          depth: q.get('depth') || undefined,
+          level: q.get('level') || undefined,
+          axis: q.get('axis') || undefined,
+          surge: q.get('surge') || undefined,
+          vol: q.get('vol') || undefined,
+        }), { items: [], total: 0, shown: 0 }) };
+      }
+      case '/api/pairreb': {
+        const bars = Math.max(40, Math.min(400, Number(q.get('bars')) || 120));
+        const limit = Math.max(1, Math.min(400, Number(q.get('limit')) || 200));
+        const minPullBars = q.get('minPullBars');
+        const side = q.get('side');
+        return { body: safe(() => engine.pairReboundCharts(bars, limit, {
+          minPullBars: minPullBars == null ? undefined : Number(minPullBars),
+          side: side || undefined,
+        }), { items: [], total: 0, shown: 0 }) };
+      }
     case '/api/config': return { body: engine.cfg };
     case '/api/resync': {
       market.resyncAll().catch(e => log.warn('对账失败：' + e.message));

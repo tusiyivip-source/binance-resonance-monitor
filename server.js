@@ -44,7 +44,8 @@ function sseSend(res, type, data) {
 
 engine.on('alert', alert => {
   tracker.record(alert);
-  pusher.push(alert);                 // 钉钉推送（内部做聚合与限流，非阻塞）
+  // noPush：这类报警只进历史/页面，不推钉钉（例如「配对全景」用的 pairzero）
+  if (!alert.noPush) pusher.push(alert);   // 钉钉推送（内部做聚合与限流，非阻塞）
   for (const c of clients) sseSend(c, 'alert', alert);
 });
 
@@ -205,6 +206,37 @@ async function handleRequest(req, res) {
     const limit = Math.max(1, Math.min(60, Number(url.searchParams.get('limit')) || 24));
     return json(res, engine.alertCharts(bars, limit));
   }
+      if (url.pathname === '/api/chanhalf') {
+        const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 120));
+        const limit = Math.max(1, Math.min(400, Number(url.searchParams.get('limit')) || 200));
+        return json(res, engine.chanHalfCharts(bars, limit, {
+          axis: url.searchParams.get('axis') || undefined,
+          mode: url.searchParams.get('mode') || undefined,
+          minBars: url.searchParams.get('minBars') || undefined,
+          minPullBars: url.searchParams.get('minPullBars') || undefined,
+        }));
+      }
+      if (url.pathname === '/api/crosspb') {
+        const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 120));
+        const limit = Math.max(1, Math.min(400, Number(url.searchParams.get('limit')) || 200));
+        return json(res, engine.crossPullbackCharts(bars, limit, {
+          depth: url.searchParams.get('depth') || undefined,
+          level: url.searchParams.get('level') || undefined,
+          axis: url.searchParams.get('axis') || undefined,
+          surge: url.searchParams.get('surge') || undefined,
+          vol: url.searchParams.get('vol') || undefined,
+        }));
+      }
+      if (url.pathname === '/api/pairreb') {
+        const bars = Math.max(40, Math.min(400, Number(url.searchParams.get('bars')) || 120));
+        const limit = Math.max(1, Math.min(400, Number(url.searchParams.get('limit')) || 200));
+        const minPullBars = url.searchParams.get('minPullBars');
+        const side = url.searchParams.get('side');
+        return json(res, engine.pairReboundCharts(bars, limit, {
+          minPullBars: minPullBars == null ? undefined : Number(minPullBars),
+          side: side || undefined,
+        }));
+      }
   if (url.pathname === '/api/config') {
     if (req.method === 'POST') {
       let body = '';

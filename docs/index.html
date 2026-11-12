@@ -64,7 +64,7 @@
 <main>
   <div class="viewtabs">
     <button id="tab-zero" class="vt on">◎ 配对监控</button>
-    <button id="tab-single" class="vt">🚀 单K回踩不破</button>
+    <button id="tab-single" class="vt">🚀 一阳穿三阴</button>
     <span class="vtsep"></span>
     <span id="single-bar" style="display:none">
       <select id="single-mode" class="vtsel" title="单K策略的展示方式">
@@ -92,7 +92,9 @@
       <span id="single-live" class="chartlive"></span>
     </span>
     <button id="tab-pgrid" class="vt">▦ 配对全景</button>
-    <button id="tab-alert" class="vt">🔔 报警级别K线</button>
+    <button id="tab-rev" class="vt">🔔 报警级别K线</button>
+    <button id="tab-half" class="vt">🎯 背驰50%</button>
+    <button id="tab-cg" class="vt">🔁 金叉回踩</button>
     <span class="vtsep"></span>
     <span id="zero-symbar" style="display:none">
       <select id="pair-mode" class="vtsel" title="配对信号的展示方式">
@@ -134,27 +136,75 @@
       <button id="pg-refresh" class="vt mini" title="立即刷新">↻</button>
       <span id="pg-live" class="chartlive"></span>
     </span>
+    <span id="cg-symbar" style="display:none">
+      <div id="cg-axis" class="nnseg">
+        <button class="nnbtn on" data-axis="all">零轴不限</button>
+        <button class="nnbtn" data-axis="above">零轴上</button>
+        <button class="nnbtn" data-axis="below">零轴下</button>
+      </div>
+      <select id="cg-level" class="vtsel" title="只看某个级别">
+        <option value="all" selected>全部级别</option>
+        <option value="15m">15分</option>
+        <option value="30m">30分</option>
+        <option value="1h">1小时</option>
+        <option value="2h">2小时</option>
+        <option value="3h">3小时</option>
+        <option value="6h">6小时</option>
+        <option value="12h">12小时</option>
+      </select>
+      <div id="cg-depth" class="nnseg">
+        <button class="nnbtn on" data-depth="1">回踩 1 根</button>
+        <button class="nnbtn" data-depth="2">回踩 2 根</button>
+      </div>
+      <select id="cg-limit" class="vtsel" title="显示多少个面板">
+        <option value="40">40 个</option>
+        <option value="80">80 个</option>
+        <option value="200" selected>全部</option>
+      </select>
+      <button id="cg-reset" class="vt mini" title="恢复被 ✕ 关掉的面板">↺</button>
+      <button id="cg-refresh" class="vt mini" title="立即刷新">↻</button>
+      <span id="cg-live" class="chartlive"></span>
+    </span>
+    <span id="half-symbar" style="display:none">
+      <div id="half-axis" class="nnseg">
+        <button class="nnbtn on" data-axis="all">零轴不限</button>
+        <button class="nnbtn" data-axis="above">零轴上(多)</button>
+        <button class="nnbtn" data-axis="below">零轴下(空)</button>
+      </div>
+      <div id="half-mode" class="nnseg">
+        <button class="nnbtn on" data-mode="all">两种都要</button>
+        <button class="nnbtn" data-mode="1">只要背驰50%</button>
+        <button class="nnbtn" data-mode="2">只要反弹50%</button>
+      </div>
+      <select id="half-limit" class="vtsel" title="显示多少个面板">
+        <option value="40">40 个</option>
+        <option value="80">80 个</option>
+        <option value="200" selected>全部</option>
+      </select>
+      <button id="half-reset" class="vt mini" title="恢复被 ✕ 关掉的面板">↺</button>
+      <button id="half-refresh" class="vt mini" title="立即刷新">↻</button>
+      <span id="half-live" class="chartlive"></span>
+    </span>
+    <span id="rev-symbar" style="display:none">
+      <div id="rev-side" class="nnseg">
+        <button class="nnbtn on" data-side="all">全部</button>
+        <button class="nnbtn" data-side="long">只看多</button>
+        <button class="nnbtn" data-side="short">只看空</button>
+      </div>
+      <select id="rev-limit" class="vtsel" title="显示多少个面板">
+        <option value="40">40 个</option>
+        <option value="80">80 个</option>
+        <option value="200" selected>全部</option>
+      </select>
+      <button id="rev-reset" class="vt mini" title="恢复被 ✕ 关掉的面板">↺</button>
+      <button id="rev-refresh" class="vt mini" title="立即刷新">↻</button>
+      <span id="rev-live" class="chartlive"></span>
+    </span>
     <span id="chart-symbar" style="display:none">
       <span id="chart-sym" class="chartsym">—</span>
       <button id="chart-prev" class="vt mini" title="上一个币种">◀</button>
       <button id="chart-next" class="vt mini" title="下一个币种">▶</button>
       <button id="chart-detail" class="vt mini" title="查看该币种的级别明细表">📋 明细</button>
-    </span>
-    <span id="alert-symbar" style="display:none">
-      <span class="chartsym">每条报警的<b style="color:#f0b90b">确认级别</b>K线 · 按报警顺序</span>
-      <select id="alert-limit" class="vtsel" title="最多展示多少条报警">
-        <option value="12">最近 12 条</option>
-        <option value="24" selected>最近 24 条</option>
-        <option value="40">最近 40 条</option>
-        <option value="60">最近 60 条</option>
-      </select>
-      <select id="alert-size" class="vtsel" title="每张图的尺寸">
-        <option value="compact">紧凑（塞进一屏）</option>
-        <option value="normal" selected>标准</option>
-        <option value="large">大</option>
-        <option value="xl">特大</option>
-      </select>
-      <button id="alert-refresh" class="vt mini" title="立即刷新">↻</button>
     </span>
     <select id="chart-bars" class="vtsel" title="每个级别显示多少根K线">
       <option value="auto" selected>自动根数</option>
@@ -169,7 +219,6 @@
     <label class="toggle"><input type="checkbox" id="chart-mark" checked> 事件标记</label>
 
     <label class="toggle"><input type="checkbox" id="chart-macd" checked> MACD副图</label>
-    <span id="alert-live" class="chartlive"></span>
     <span id="zero-live" class="chartlive"></span>
   </div>
 
@@ -211,6 +260,28 @@
       <div id="pggrid"></div>
       <div id="pg-empty" class="empty" style="display:none">当前没有配对信号。</div>
     </div>
+    <!-- 金叉回踩：多级别，金叉后回踩阴线 / 死叉后反弹阳线 -->
+    <div id="view-cg">
+      <div id="cggrid"></div>
+      <div id="cg-empty" class="empty" style="display:none">
+        暂无符合条件的信号。需要：该级别出现金叉（或死叉）→ 走出反向K线 → 回踩第 N 根阴线（做空为反弹第 N 根阳线）。
+      </div>
+    </div>
+    <!-- 背驰50%：多级别 + 缠论笔 + 50% 分位 -->
+    <div id="view-half">
+      <div id="halfgrid"></div>
+      <div id="half-empty" class="empty" style="display:none">
+        暂无符合条件的信号。需要：次级别最后一笔 ≥5 根K线 + 回调 ≥5 根 + 最近两根K线内越过该笔的 50%（高点到低点的一半）。
+      </div>
+    </div>
+    <!-- 报警级别K线：配对共振 + 次级别反转条件（回踩≥5根、连续两根阳K、止跌） -->
+    <div id="view-rev">
+      <div id="revgrid"></div>
+      <div id="rev-empty" class="empty" style="display:none">
+        暂无符合条件的反转信号。需要同时满足：配对共振成立 + 次级别回踩至少 5 根 +
+        连续两根阳K（做空为两根阴K）+ 低点抬高（止跌）。
+      </div>
+    </div>
     <!-- 单K推动 + 回调不破（独立策略，只扫涨幅榜前 50）——默认平铺 K 线 -->
     <div id="view-single">
       <div id="singlechartwrap">
@@ -241,12 +312,6 @@
           </thead>
           <tbody id="singlebody"></tbody>
         </table>
-      </div>
-    </div>
-    <div id="alertchartwrap">
-      <div id="alertchartgrid"></div>
-      <div id="alert-empty" class="empty" style="display:none">
-        暂无报警。等待多级别共振信号产生后，这里会按报警顺序逐个画出它们的<b>确认级别</b>K线。
       </div>
     </div>
   </div>
@@ -491,5 +556,8 @@
   }).catch(fail);
 })();
 </script>
+<script src="/revgrid.js"></script>
+<script src="/halfgrid.js"></script>
+<script src="/crossgrid.js"></script>
 </body>
 </html>

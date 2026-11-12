@@ -8,7 +8,7 @@
  * 5) 真实行情冒烟测试
  */
 import { ZERO_LEVEL_KEYS, ZERO_PAIRS, zeroOptions, zeroMonitorAt, zeroMatches, zeroPairHit, bigCandleSupport } from '../src/zero-monitor.js';
-import { SINGLE_K_LEVELS, SINGLE_K_ZERO_SIDES, singleKOptions, singleKAt } from '../src/single-k.js';
+import { SINGLE_K_LEVELS, SINGLE_K_ZERO_SIDES, SINGLE_K_CONFIRM, confirmLevelOf, singleKOptions, singleKAt } from '../src/single-k.js';
 import { PAIR_ZERO_PAIRS, pairZeroOptions, levelZeroAt, pairZeroHit, comparePairZero } from '../src/pair-zero.js';
 import { APP as APP_CFG, EXCLUDE_TRADFI_RE, EXCLUDE_TRADFI_BASE } from '../src/config.js';
 import { CandleSeries } from '../src/series.js';
@@ -1542,157 +1542,84 @@ section('17. 零轴监控：回踩零轴不破（多）/ 上穿零轴不穿（�
   }
 }
 
-/* ============ 18. 单K推动 + 回调不破 ============ */
-section('18. 单K推动 + 回调不破（只扫涨幅榜前 N）');
+/* ============ 18. 一阳穿三阴 ============ */
+section('18. 一阳穿三阴（原「单K回踩不破」升级）');
 {
-  const opt = singleKOptions({}, { singleKMinGainPct: 2, singleKMult: 1.5, singleKLookback: 20, singleKMaxAfter: 12, singleKTopN: 50 });
+  const opt = singleKOptions({}, { singleKMinDownBars: 5, singleKLookback: 20, singleKTopN: 200 });
   const mkS = rows => ({
     t: rows.map((_, i) => i * 900000), ms: 900000,
     o: rows.map(r => r[0]), h: rows.map(r => r[1]),
     l: rows.map(r => r[2]), c: rows.map(r => r[3]),
   });
-  // 20 根十字星 → 大阳线(+5%) → 3 根浅回调
-  const base = Array.from({ length: 20 }, () => [1.00, 1.004, 0.998, 1.001]);
-  const up = base.concat([
-    [1.00, 1.06, 0.995, 1.05],
-    [1.045, 1.048, 1.030, 1.032],
-    [1.032, 1.036, 1.020, 1.024],
-    [1.024, 1.028, 1.012, 1.015],
-  ]);
-  const hit = singleKAt(mkS(up), up.length - 1, opt);
-  ok('★ 大阳线 + 回调不破 → 命中',
-    !!hit && Math.abs(hit.open - 1.00) < 1e-9,
-    hit ? '涨幅 ' + hit.bodyPct.toFixed(1) + '%（放大 ' + hit.mult.toFixed(1) + ' 倍），回踩 ' + hit.retracePct.toFixed(1) + '%，回调 ' + hit.barsAfter + ' 根' : 'null');
-  ok('★ 回踩幅度小于单K涨幅（策略核心条件）',
-    !!hit && hit.retracePct < hit.bodyPct,
-    hit ? hit.retracePct.toFixed(2) + '% < ' + hit.bodyPct.toFixed(2) + '%' : '—');
-  ok('不破线 = 大阳线最低价', !!hit && Math.abs(hit.low - 0.995) < 1e-9, hit ? String(hit.low) : '—');
 
-  // 回调收盘跌破大阳线最低价
-  const broke = up.slice();
-  broke[broke.length - 1] = [1.024, 1.026, 0.985, 0.990];
-  ok('★ 回调收盘跌破大阳线最低价 → 拒绝',
-    singleKAt(mkS(broke), broke.length - 1, opt) === null);
+  // 12 根阴线（开价逐根下移 0.003，收 = 开 - 0.002）
+  // 最近三根的开盘价分别是 1.033 / 1.030 / 1.027 → 三阴最高开盘 = 1.033
+  const base = Array.from({ length: 12 }, (_, i) => {
+    const o = 1.060 - i * 0.003;
+    const c = o - 0.002;
+    return [o, o + 0.001, c - 0.001, c];
+  });
+  // 阳线收 1.040 > 1.033 → 穿三阴成立
+  const good = base.concat([[1.030, 1.045, 1.029, 1.040]]);
+  const hit = singleKAt(mkS(good), good.length - 1, opt);
+  ok('★ 三阴之后一阳穿透 → 命中', !!hit, hit ? '穿透 ' + hit.retracePct.toFixed(2) + '%' : 'null');
+  ok('★ 触发的那根必须是阳线', !!hit && Math.abs(hit.open - 1.030) < 1e-9 && Math.abs(hit.close - 1.040) < 1e-9,
+    hit ? '开 ' + hit.open + ' → 收 ' + hit.close : '—');
+  ok('★ 关键位 = 三阴里最高的开盘价', !!hit && Math.abs(hit.line - 1.033) < 1e-9,
+    hit ? 'line=' + hit.line : '—');
+  ok('★ 收盘价确实高于该关键位', !!hit && hit.close > hit.line,
+    hit ? hit.close + ' > ' + hit.line : '—');
+  ok('★ 带出连续阴线根数', !!hit && hit.barsAfter === 12, hit ? hit.barsAfter + ' 根' : '—');
+  ok('★ 带出下跌段根数（参与 ≥5 门槛）', !!hit && hit.downBars >= 5, hit ? hit.downBars + ' 根' : '—');
 
-  // 回踩幅度 >= 涨幅（收在 0.997：没破 0.995，但回踩 5.05% > 涨幅 5%）
-  const deep = up.slice();
-  deep[deep.length - 1] = [1.024, 1.026, 0.996, 0.997];
-  ok('★ 回踩幅度超过单K涨幅 → 拒绝',
-    singleKAt(mkS(deep), deep.length - 1, opt) === null);
+  // 穿透不足：阳线收 1.032 < 1.033
+  const weak = base.concat([[1.030, 1.035, 1.029, 1.032]]);
+  ok('★ 收盘没超过三阴最高开盘 → 不命中', singleKAt(mkS(weak), weak.length - 1, opt) === null);
 
+  // 三阴里混进一根阳线 → 不成立
+  const withBull = base.slice(0, 11).concat(
+    [[1.027, 1.029, 1.025, 1.028]],          // 倒数第二根是阳
+    [[1.028, 1.048, 1.027, 1.045]],
+  );
+  ok('★ 三阴位置不是阴线 → 不命中', singleKAt(mkS(withBull), withBull.length - 1, opt) === null);
 
-  // —— 做空（反向镜像）：大阴线 + 反抽不破 ——
-  {
-    const dnFlat = Array.from({ length: 24 }, () => [1.00, 1.004, 0.996, 0.999]);
-    const dn = dnFlat.concat([
-      [1.00, 1.005, 0.94, 0.95],      // 大阴线 −5%，最高价 1.005
-      [0.955, 0.970, 0.952, 0.968],   // 反抽
-      [0.968, 0.985, 0.964, 0.982],
-      [0.982, 0.990, 0.978, 0.985],   // 收 0.985 < 最高价 1.005
-    ]);
-    const sdn = mkS(dn);
-    const shortHit = singleKAt(sdn, dn.length - 1, opt, -1);
-    ok('★ 大阴线 + 反抽不破最高价 → 空头命中',
-      !!shortHit && shortHit.dir === 'short' && Math.abs(shortHit.line - 1.005) < 1e-9,
-      shortHit ? '跌 ' + shortHit.bodyPct.toFixed(1) + '%，反抽 ' + shortHit.retracePct.toFixed(1) + '%，不破线=' + shortHit.line : 'null');
-    ok('★ 空头：反抽幅度小于单K跌幅',
-      !!shortHit && shortHit.retracePct < shortHit.bodyPct,
-      shortHit ? shortHit.retracePct.toFixed(2) + '% < ' + shortHit.bodyPct.toFixed(2) + '%' : '—');
+  // 空头方向不支持
+  ok('★ 传 dir=-1 时不成立（形态只做多）', singleKAt(mkS(good), good.length - 1, opt, -1) === null);
 
-    // 反抽收盘涨破最高价 → 破位
-    const upBreak = dn.slice();
-    upBreak[upBreak.length - 1] = [0.982, 1.010, 0.980, 1.008];
-    ok('★ 反抽收盘涨破最高价 → 拒绝',
-      singleKAt(mkS(upBreak), upBreak.length - 1, opt, -1) === null);
+  // 下跌段不足 5 根：最高价出现在离最后一根阴线只有 3 根的位置 → downBars=4
+  const shortLeg = [
+    [1.000, 1.001, 0.999, 1.000],
+    [1.000, 1.100, 0.999, 1.000],    // 这一段最高点
+    [1.000, 1.001, 0.997, 0.998],    // 阴
+    [0.998, 0.999, 0.995, 0.996],    // 阴
+    [0.996, 0.997, 0.993, 0.994],    // 阴（最后一根）
+    [0.994, 1.010, 0.993, 1.008],    // 阳，收 1.008 > 三阴最高开盘 1.000
+  ];
+  const sl = singleKAt(mkS(shortLeg), shortLeg.length - 1, opt);
+  ok('★ 下跌段不足 5 根 → 不命中', sl === null, sl ? '反而命中（段长 ' + sl.downBars + '）' : 'null');
 
-    // 反抽幅度 >= 跌幅
-    const upDeep = dn.slice();
-    upDeep[upDeep.length - 1] = [0.982, 1.004, 0.980, 1.002];
-    ok('★ 反抽幅度超过单K跌幅 → 拒绝',
-      singleKAt(mkS(upDeep), upDeep.length - 1, opt, -1) === null);
+  // 零轴筛选
+  const mkInd = v => ({ macd: { dif: Array.from({ length: good.length }, () => v), dea: [], hist: [] } });
+  const indAbove = mkInd(0.5), indBelow = mkInd(-0.5);
+  ok('★ 不限零轴：两侧都命中',
+    !!singleKAt(mkS(good), good.length - 1, opt, 1, indAbove) &&
+    !!singleKAt(mkS(good), good.length - 1, opt, 1, indBelow));
+  const optAbove = singleKOptions({ zero: 'above' }, { singleKMinDownBars: 5, singleKLookback: 20 });
+  const optBelow = singleKOptions({ zero: 'below' }, { singleKMinDownBars: 5, singleKLookback: 20 });
+  ok('★ 只要零轴上：DIF 在上方 → 命中', !!singleKAt(mkS(good), good.length - 1, optAbove, 1, indAbove));
+  ok('★ 只要零轴上：DIF 在下方 → 不命中', singleKAt(mkS(good), good.length - 1, optAbove, 1, indBelow) === null);
+  ok('★ 只要零轴下：DIF 在下方 → 命中', !!singleKAt(mkS(good), good.length - 1, optBelow, 1, indBelow));
+  const h2 = singleKAt(mkS(good), good.length - 1, opt, 1, indAbove);
+  ok('★ 命中结果带出 zeroSide 与 dif', !!h2 && h2.zeroSide === 'above' && Math.abs(h2.dif - 0.5) < 1e-9,
+    h2 ? h2.zeroSide + ' / ' + h2.dif : '—');
 
-    // 方向不符：大阳线不能当空头、大阴线不能当多头
-    ok('方向不符（大阳线不认作空头）', singleKAt(mkS(up), up.length - 1, opt, -1) === null);
-    ok('方向不符（大阴线不认作多头）', singleKAt(mkS(dn), dn.length - 1, opt, 1) === null);
-
-    // 默认方向是做多（不传 dir）
-    ok('不传方向参数时默认按做多判定', !!singleKAt(mkS(up), up.length - 1, opt));
-  }
-
-
-  // 已经收复失地（收盘回到大阳线收盘之上）
-  const back = up.slice();
-  back[back.length - 1] = [1.024, 1.06, 1.022, 1.055];
-  ok('已经收复（收盘回到大阳线收盘之上）→ 拒绝',
-    singleKAt(mkS(back), back.length - 1, opt) === null);
-
-  // 涨幅不足
-  const small = Array.from({ length: 20 }, () => [1.00, 1.004, 0.998, 1.001]);
-  small.push([1.00, 1.012, 0.998, 1.011]);
-  small.push([1.008, 1.010, 1.002, 1.004]);
-  ok('单K涨幅不足 2% → 拒绝', singleKAt(mkS(small), small.length - 1, opt) === null);
-
-  // 回调根数超过上限
-  const late = base.concat([[1.00, 1.06, 0.995, 1.05]]);
-  for (let i = 0; i < 14; i++) late.push([1.045 - i * 0.001, 1.046 - i * 0.001, 1.030 - i * 0.001, 1.032 - i * 0.001]);
-  ok('回调根数超过上限 → 拒绝', singleKAt(mkS(late), late.length - 1, opt) === null);
-
-  // 参数
-  // —— 零轴位置筛选：只看「那根单K发生时」DIF 在零轴上方 / 下方 ——
-  {
-    const zFlat = Array.from({ length: 24 }, () => [1.00, 1.004, 0.998, 1.001]);
-    const zUp = zFlat.concat([
-      [1.00, 1.06, 0.995, 1.05],
-      [1.045, 1.048, 1.030, 1.032],
-      [1.032, 1.036, 1.020, 1.024],
-      [1.024, 1.028, 1.012, 1.015],
-    ]);
-    const zs = mkS(zUp);
-    const base = { singleKMinGainPct: 2, singleKMult: 1.5, singleKLookback: 20, singleKMaxAfter: 12 };
-    const oAll = singleKOptions({}, { ...base });
-    const oUp = singleKOptions({ zero: 'above' }, { ...base });
-    const oDn = singleKOptions({ zero: 'below' }, { ...base });
-
-    ok('零轴筛选参数：不限 / 零轴上 / 零轴下',
-      oAll.zeroSide === 'all' && oUp.zeroSide === 'above' && oDn.zeroSide === 'below',
-      oAll.zeroSide + ' / ' + oUp.zeroSide + ' / ' + oDn.zeroSide);
-    ok('非法零轴参数退回「不限」', singleKOptions({ zero: 'xxx' }, {}).zeroSide === 'all');
-    ok('三种零轴取值已导出',
-      JSON.stringify(SINGLE_K_ZERO_SIDES) === JSON.stringify(['all', 'above', 'below']),
-      SINGLE_K_ZERO_SIDES.join(','));
-
-    const difUp = new Float64Array(zUp.length).fill(NaN); difUp[24] = 0.01;
-    const difDn = new Float64Array(zUp.length).fill(NaN); difDn[24] = -0.01;
-    const indUp = { macd: { dif: difUp } }, indDn = { macd: { dif: difDn } };
-
-    ok('不限时，DIF 在哪一侧都命中',
-      !!singleKAt(zs, zUp.length - 1, oAll, 1, indUp) && !!singleKAt(zs, zUp.length - 1, oAll, 1, indDn));
-    ok('★ 只要零轴上：DIF 在零轴上 → 命中',
-      !!singleKAt(zs, zUp.length - 1, oUp, 1, indUp));
-    ok('★ 只要零轴上：DIF 在零轴下 → 排除',
-      singleKAt(zs, zUp.length - 1, oUp, 1, indDn) === null);
-    ok('★ 只要零轴下：DIF 在零轴下 → 命中',
-      !!singleKAt(zs, zUp.length - 1, oDn, 1, indDn));
-    ok('★ 只要零轴下：DIF 在零轴上 → 排除',
-      singleKAt(zs, zUp.length - 1, oDn, 1, indUp) === null);
-    ok('要筛选却没给指标 → 不成立（fail closed）',
-      singleKAt(zs, zUp.length - 1, oUp, 1, null) === null);
-    ok('命中结果带出 zeroSide 与 dif',
-      (() => { const h = singleKAt(zs, zUp.length - 1, oAll, 1, indUp);
-        return !!h && h.zeroSide === 'above' && Math.abs(h.dif - 0.01) < 1e-12; })());
-  }
-
-
-  ok('默认覆盖整个标的池（单K不再卡 200）', DEFAULT_SIGNAL.singleKTopN === 500, 'singleKTopN=' + DEFAULT_SIGNAL.singleKTopN);
-  ok('默认单K涨幅下限 2%', DEFAULT_SIGNAL.singleKMinGainPct === 2, 'singleKMinGainPct=' + DEFAULT_SIGNAL.singleKMinGainPct);
-  ok('默认实体倍数 1.5', DEFAULT_SIGNAL.singleKMult === 1.5, 'singleKMult=' + DEFAULT_SIGNAL.singleKMult);
-  ok('★ 单K推送默认有 500 万 USDT 的成交额门槛',
-    DEFAULT_SIGNAL.singleKMinQuoteVolume === 5_000_000,
-    'singleKMinQuoteVolume=' + DEFAULT_SIGNAL.singleKMinQuoteVolume);
-  ok('扫描级别为 15m/30m/1h/2h/3h/4h/6h',
-    JSON.stringify(SINGLE_K_LEVELS) === JSON.stringify(['15m', '30m', '1h', '2h', '3h', '4h', '6h']),
-    SINGLE_K_LEVELS.join(','));
+  // 上级确认级别映射
+  ok('★ 确认级别映射：15分→2时 / 30分→3时 / 1时→6时',
+    confirmLevelOf('15m') === '2h' && confirmLevelOf('30m') === '3h' && confirmLevelOf('1h') === '6h',
+    [confirmLevelOf('15m'), confirmLevelOf('30m'), confirmLevelOf('1h')].join(' '));
+  ok('★ 单K只做多的开关存在', DEFAULT_SIGNAL.singleKLongOnly === true);
 }
+
 
 /* ============ 19. 次级别回踩 / 主级别零轴 配对 ============ */
 section('19. 次级别回踩 / 主级别零轴 配对');

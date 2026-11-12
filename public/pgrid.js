@@ -88,11 +88,11 @@ function pgUpdateCard(e, it) {
   pctEl.className = 'pg-pct ' + (pct >= 0 ? 'up' : 'dn');
   card.querySelector('.pg-info').innerHTML =
     `<span class="pg-vol" title="24小时成交额">额 ${pgFmtVol(pr.quoteVolume)}</span>`
-    + `<span class="pg-pair">${pr.subLabel}→${pr.mainLabel}</span>`
+    + `<span class="pg-pair">${pr.levelLabel || pr.subLabel || pr.sub}</span>`
     + `<span class="pg-dir ${up ? 'up' : 'dn'}">${up ? '看多' : '看空'}</span>`
-    + `<span>${up ? '回踩' : '反弹'} <b>${pr.subPullBars}</b> 根</span>`
-    + `<span title="主级别 DIF">主 ${Number(pr.mainDif).toPrecision(3)}</span>`
-    + `<span title="次级别 DIF">次 ${Number(pr.subDif).toPrecision(3)}</span>`;
+    + `<span class="pg-variant ${pr.variant === "state" ? "v-state" : "v-first"}">${pr.variantLabel || (pr.variant === "state" ? "零上死叉·阳收MA5" : "首次收阳")}</span>`
+    + `<span title="死叉那一刻的 DIF 与 DEA（两个都必须在零轴上方）">死叉 DIF ${Number(pr.deadDif ?? pr.mainDif).toPrecision(3)} / DEA ${Number(pr.deadDea ?? pr.deadDif ?? pr.mainDif).toPrecision(3)}</span>`
+    + `<span title="5 周期均线">MA5 ${Number(pr.ma5 ?? pr.subDif).toPrecision(3)}</span>`
 
   // —— K线 ——
   const cs = it.candles;

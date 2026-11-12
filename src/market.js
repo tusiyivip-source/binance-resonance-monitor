@@ -35,7 +35,11 @@ export class Market {
     this.rest = rest;
     this.log = log;
     this.symbols = new Map();      // symbol -> state
-    this.universe = [];            // 排序后的 symbol 列表（按24h涨幅降序）
+    this.universe = [];
+    // 被「固定」的币种：即使跌出榜单也要留着，否则它的K线数据被删、卡片会消失
+    this.pinnedKeep = new Set();
+    // 跌出榜单的币种状态缓存（15 分钟）：防止每分钟 churn 导致反复重新播种
+    this.retired = new Map();
     this.revision = 0;
     this.startedAt = Date.now();
     this.lastTickerAt = 0;
@@ -61,6 +65,29 @@ export class Market {
    */
   async init() {
     this.startFeed();
+    // 定时器必须在这里注册：bootstrap() 里的任何一步失败（比如读缓存抛错）
+    // 都会让后面的注册代码永远执行不到，榜单就再也不刷新了。
+    this.startTimers();
+  }
+
+  /** 注册周期性任务（榜单 / 可交易清单）。幂等。 */
+  startTimers() {
+    if (!this.tickerTimer) {
+      this.tickerTicks = 0;
+      this.tickerTimer = setInterval(() => {
+        this.tickerTicks++;
+        this.refreshUniverse({ seed: true })
+          .catch(e => this.log.warn('榜单刷新失败：' + (e && e.message)));
+      }, Math.max(15_000, APP.tickerRefreshMs || 60_000));
+      if (this.tickerTimer.unref) this.tickerTimer.unref();
+      this.log.info(`榜单刷新已启动：每 ${Math.round(Math.max(15_000, APP.tickerRefreshMs || 60_000) / 1000)} 秒一次`);
+    }
+    if (!this.exchangeTimer) {
+      this.exchangeTimer = setInterval(() => {
+        this.refreshExchangeInfo().catch(() => {});
+      }, Math.max(60_000, APP.exchangeInfoRefreshMs || 30 * 60_000));
+      if (this.exchangeTimer.unref) this.exchangeTimer.unref();
+    }
   }
 
   /**
@@ -75,6 +102,8 @@ export class Market {
     this.onCacheReady?.();   // 交给 Node 侧读盘并调用 applyCache()
     // 播种在后台渐进执行（受权重预算约束）
     this.seedAll().catch(e => this.log.error('播种失败：' + e.message));
+
+    this.startTimers();
   }
 
   /** 缓存文件路径 */
@@ -203,7 +232,8 @@ export class Market {
 
   async refreshUniverse({ seed = true } = {}) {
     try {
-      const tickers = await this.rest.get(APP.tickerPath, { weight: APP.profile.tickerWeight, timeout: 30_000 });
+      // priority：别排在播种的K线请求后面，否则榜单会被饿到几十分钟不刷新
+      const tickers = await this.rest.get(APP.tickerPath, { weight: APP.profile.tickerWeight, timeout: 30_000, priority: true });
       this.lastTickerAt = Date.now();
       const rows = [];
       for (const t of tickers) {
@@ -246,23 +276,62 @@ export class Market {
         pickedSet.add(r.symbol);
         picked.push(r);
       }
-      this.universe = picked.map(r => r.symbol);
+      // 被固定的币种：即使跌出两个榜，也要留在池子里（rank 记 0，不参加策略扫描），
+      // 否则 symbols 会被删掉，配对全景里固定的那张卡就没数据、凭空消失。
+      const extra = [];
+      if (this.pinnedKeep && this.pinnedKeep.size) {
+        const bySym = new Map(rows.map(r => [r.symbol, r]));
+        for (const sym of this.pinnedKeep) {
+          if (pickedSet.has(sym)) continue;
+          const r = bySym.get(sym);
+          if (!r) continue;              // 交易对已下架，确实拿不到
+          pickedSet.add(sym);
+          extra.push(r);
+        }
+      }
+      const all = picked.concat(extra);
+      this.universe = all.map(r => r.symbol);
       const keep = new Set(this.universe);
 
-      // 移除跌出榜单的币种
+      // 移除跌出榜单的币种。
+      // ⚠ 不能直接 delete：榜单每分钟都在小幅churn（±1~4 个），
+      //   一个币刚被删掉、下一分钟又回来了，就会从零重新播种 12 个级别 ——
+      //   既浪费权重，也导致「新进池的币永远播不完」（刚播一半又被删）。
+      //   这里先放进 retired 缓存留 15 分钟，回来直接复用（seeded 还在，不重播）。
       for (const sym of [...this.symbols.keys()]) {
-        if (!keep.has(sym)) this.symbols.delete(sym);
+        if (keep.has(sym)) continue;
+        const st = this.symbols.get(sym);
+        if (st) this.retired.set(sym, { st, at: Date.now() });
+        this.symbols.delete(sym);
+      }
+      // 清理退役缓存：超过 15 分钟、或超过 400 个就按最旧的丢
+      {
+        const cutoff = Date.now() - 15 * 60_000;
+        for (const [sym, v] of this.retired) {
+          if (v.at < cutoff) this.retired.delete(sym);
+        }
+        if (this.retired.size > 400) {
+          const olds = [...this.retired.entries()].sort((a, b) => a[1].at - b[1].at);
+          for (let i = 0; i < olds.length - 400; i++) this.retired.delete(olds[i][0]);
+        }
       }
       // 新建/更新状态
       const fresh = [];
+      const rankOf = new Map(picked.map((r, i) => [r.symbol, i + 1]));
       let rank = 0;
-      for (const r of picked) {
-        rank++;
+      for (const r of all) {
+        rank = rankOf.get(r.symbol) ?? 0;   // 0 = 只是为了保住数据，不参与策略
         let st = this.symbols.get(r.symbol);
         if (!st) {
-          st = createSymbolState(r.symbol);
+          const back = this.retired.get(r.symbol);   // 刚掉出去又回来了 → 直接复用
+          if (back) {
+            st = back.st;
+            this.retired.delete(r.symbol);
+          } else {
+            st = createSymbolState(r.symbol);
+            fresh.push(st);
+          }
           this.symbols.set(r.symbol, st);
-          fresh.push(st);
         }
         st.price = r.price;
         st.changePct = r.changePct;
@@ -290,7 +359,11 @@ export class Market {
   // ---------- REST 播种 / 对账 ----------
 
   /** 播种单个币种的全部原生级别（首轮用较大的 backfill 回填更多历史） */
-  async seedSymbol(st, only) {
+  async seedSymbol(st, only, opts = {}) {
+    // priority：新标的补播种用。启动时的全量播种会把权重吃满，
+    // 补播种如果排队等，一个级别要 48 秒（12 个级别 10 分钟），
+    // 而下一次榜单刷新 60 秒后就把它重置了 —— 表现为「新进池的币永远没有K线」。
+    const prio = !!opts.priority;
     // only：只补这几个级别（增量补缺口时用）。不传则补全部原生级别。
     // 断线几十秒时通常只有 1m/2m/3m 需要补，其余 9 个级别一根新K线都没有 —— 不补能省下大半权重。
     const gapFill = !!(only && only.length);
@@ -310,7 +383,7 @@ export class Market {
       const weight = lim >= 500 ? 5 : lim >= 100 ? 2 : 1;
       const rows = await this.rest.get(
         `${APP.klinesPath}?symbol=${st.symbol}&interval=${lv.key}&limit=${lim}`,
-        { weight, timeout: 20_000 },
+        { weight, timeout: 20_000, priority: prio },
       );
       st.series[lv.key].mergeLoad(rows.map(r => parseKline(r, ms)));
     }
@@ -334,7 +407,8 @@ export class Market {
     this.log.info(`补播种 ${list.length} 个新标的…`);
     const t0 = Date.now();
     await this.rest.mapLimit(list, async st => {
-      try { await this.seedSymbol(st); } catch (e) { this.log.warn(`播种 ${st.symbol} 失败：${e.message}`); }
+      const t1 = Date.now();
+      try { await this.seedSymbol(st, null, { priority: true }); } catch (e) { this.log.warn(`播种 ${st.symbol} 失败：${e.message}`); }
       this.seeding.done++;
     });
     this.seeding.active = false;
@@ -429,6 +503,9 @@ export class Market {
     return {
       market: APP.market,
       marketName: APP.profile.name,
+      retired: this.retired.size,
+      timers: { ticker: !!this.tickerTimer, exchange: !!this.exchangeTimer, ticks: this.tickerTicks || 0,
+        tickerRefreshMs: APP.tickerRefreshMs },
       feedMode: this.feedMode,
       tick: this.tickFeed ? this.tickFeed.stats : null,
       symbols: this.symbols.size,

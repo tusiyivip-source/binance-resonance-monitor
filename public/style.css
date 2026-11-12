@@ -154,22 +154,6 @@ body.chartmode .viewtabs{background:#0b1620}
 #view-chart{display:none}
 body.chartmode #chartgrid{display:grid}
 body.chartmode #tablewrap{display:none}
-#alertchartwrap{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
-body.alertchartmode #alertchartwrap{display:flex}
-#alertchartgrid{
-  flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;padding:10px;display:grid;
-  grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));
-  grid-auto-rows:max-content;
-  gap:10px;align-content:start;
-  scroll-behavior:smooth;
-  overscroll-behavior:contain;
-}
-/* 滚动提示条：内容超出时贴底显示 */
-body.alertchartmode #alertchartgrid::-webkit-scrollbar{width:11px}
-body.alertchartmode #alertchartgrid::-webkit-scrollbar-track{background:#0a1018}
-body.alertchartmode #alertchartgrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
-body.alertchartmode #alertchartgrid::-webkit-scrollbar-thumb:hover{background:#3b5170}
-body.alertchartmode #chartgrid{display:none}
 
 /* ---------- 零轴回调的 K 线图视图 ----------
    与「报警级别K线」同一套卡片外观，只是每张图画的是某个 (币种 × 级别)
@@ -417,6 +401,10 @@ body:not(.zeromonitor) .zero-guide{display:none}
 #grid .z-selected.z-watch{border-color:#796038;background:#2a251a}
 #grid .z-missing{color:#58718a;background:#101925}
 
+/* 单K卡片的上级确认行（2时 金叉 ✓ 同向） */
+.sk-conf{color:#22c55e}
+.sk-conf span:first-child{font-weight:600}
+
 /* ---------- 单K回踩不破（独立策略表） ---------- */
 #view-single{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
 body.singlemode #view-single{display:flex}
@@ -425,7 +413,10 @@ body.singlemode #view-single{display:flex}
       一个像素都画不出来（实测踩过）。这里只隐藏该视图内部的表格与零轴图。 */
 body.singlemode #tablewrap{display:none}
 body.singlemode #zerochartwrap{display:none}
-body.singlemode #alertchartwrap{display:none}
+/* 配对监控的那一套（网格工具栏 + 配对卡片）在单K页必须藏起来，
+   否则两套网格并排显示 —— 左边那半屏「反弹」形态会一直挂在那里。 */
+body.singlemode #pairwrap{display:none}
+body.singlemode #nnwrap{display:none}
 #singletablewrap{flex:1;min-width:0;overflow:auto;position:relative;min-height:0}
 #singlegrid{width:100%;border-collapse:collapse;font-size:12.5px}
 #singlegrid thead th{position:sticky;top:0;z-index:2;background:#0b1620;color:#8ba0bd;
@@ -543,6 +534,60 @@ body.pgridmode #alerts{display:none}
 #pggrid::-webkit-scrollbar{width:11px}
 #pggrid::-webkit-scrollbar-track{background:#0a1018}
 #pggrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
+
+/* ---------- 报警级别K线（配对反转提醒）：和配对全景同一套卡片样式 ---------- */
+#view-rev{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
+body.revmode #view-rev{display:flex}
+body.revmode #nnwrap,body.revmode #pairwrap,body.revmode #view-single,body.revmode #view-pgrid{display:none}
+body.revmode #alerts{display:none}
+#revgrid{flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;display:grid;
+  grid-template-columns:repeat(var(--pgcols,4),minmax(0,1fr));gap:1px;
+  background:#1a2735;align-content:start;padding:1px}
+#revgrid::-webkit-scrollbar{width:11px}
+#revgrid::-webkit-scrollbar-track{background:#0a1018}
+#revgrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
+#view-half{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
+body.halfmode #view-half{display:flex}
+body.halfmode #nnwrap,body.halfmode #pairwrap,body.halfmode #view-single,body.halfmode #view-pgrid,body.halfmode #view-rev{display:none}
+body.halfmode #alerts{display:none}
+#halfgrid{flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;display:grid;
+  grid-template-columns:repeat(var(--pgcols,4),minmax(0,1fr));gap:1px;
+  background:#1a2735;align-content:start;padding:1px}
+#halfgrid::-webkit-scrollbar{width:11px}
+#halfgrid::-webkit-scrollbar-track{background:#0a1018}
+#halfgrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
+/* 背驰 / 单纯50% 的标签 */
+#view-cg{display:none;flex:1;min-width:0;flex-direction:column;min-height:0}
+body.cgmode #view-cg{display:flex}
+body.cgmode #nnwrap,body.cgmode #pairwrap,body.cgmode #view-single,body.cgmode #view-pgrid,body.cgmode #view-rev,body.cgmode #view-half{display:none}
+body.cgmode #alerts{display:none}
+#cggrid{flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;display:grid;
+  grid-template-columns:repeat(var(--pgcols,4),minmax(0,1fr));gap:1px;
+  background:#1a2735;align-content:start;padding:1px}
+#cggrid::-webkit-scrollbar{width:11px}
+#cggrid::-webkit-scrollbar-track{background:#0a1018}
+#cggrid::-webkit-scrollbar-thumb{background:#2a3a4d;border-radius:6px;border:2px solid #0a1018}
+.cg-axis{color:#8ba0bd}
+.cg-axis.above{color:#22c55e}
+.cg-axis.below{color:#f0b90b}
+.cg-depth{color:#4aa8ff}
+.cg-surge{color:#f6465d}
+/* 两套策略的变体标签 */
+.pg-variant{border-radius:3px;padding:0 4px;font-size:10px}
+.pg-variant.v-first{background:rgba(240,185,11,.16);color:#f0b90b}
+.pg-variant.v-state{background:rgba(74,168,255,.16);color:#4aa8ff}
+.sk-variant{color:#4aa8ff}
+
+/* 50% 价位标签：叠在K线区，跟着价格坐标上下走 */
+.hg-mid{position:absolute;right:56px;transform:translateY(-50%);pointer-events:none;font-size:10px;line-height:1;padding:2px 4px;border-radius:3px;white-space:nowrap;background:rgba(139,160,189,.14);color:rgba(197,210,226,.85);border:1px solid rgba(139,160,189,.18);z-index:3}
+.hg-mid.div{background:rgba(240,185,11,.16);color:rgba(240,185,11,.92);border-color:rgba(240,185,11,.3)}
+.hg-mode{color:#8ba0bd}
+.hg-mode.div{color:#f0b90b;font-weight:600}
+.hg-ratio{color:#6b7f95}
+/* 两根阳K / 止跌 两个证据标记 */
+.rg-two{color:#f6465d}
+.pgcard.pg-short .rg-two{color:#0ecb81}
+.rg-stop{color:#f0b90b}
 .pgcard{background:#0b1219;display:flex;flex-direction:column;min-width:0;min-height:0;height:250px;position:relative}
 .pgcard.pinned{box-shadow:inset 0 0 0 1px #f0b90b}
 .pg-h{display:flex;align-items:center;gap:6px;padding:4px 7px 3px;flex:0 0 auto;min-width:0}

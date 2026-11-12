@@ -1101,8 +1101,7 @@ if (tabSingle) tabSingle.addEventListener('click', () => {
   if (typeof setView === 'function') setView('single');
   applySingleMode();
 });
-['#tab-zero', '#tab-alert'].forEach(s => { const el = $(s); if (el) el.addEventListener('click', stopSinglePoll); });
-const singleModeSel = $('#single-mode');
+['#tab-zero', '#tab-pgrid'].forEach(s => { const el = $(s); if (el) el.addEventListener('click', stopSinglePoll); });const singleModeSel = $('#single-mode');
 if (singleModeSel) singleModeSel.addEventListener('change', applySingleMode);
 const singleLimitSel = $('#single-limit');
 if (singleLimitSel) singleLimitSel.addEventListener('change', () => { if (singleModeNow() === 'chart') refreshActive(); });

@@ -5,9 +5,13 @@ import { Emitter } from './emitter.js';
 import { LEVELS, LEVEL_KEYS, LEVEL_INDEX, VISIBLE_LEVELS, STATE, EVENT, APP } from './config.js';
 import { evaluateSymbol, describe, defaultSignalConfig, encodeZero } from './signals.js';
 import { MONITOR_LEVEL_KEYS, ZERO_LEVEL_KEYS, ZERO_PAIRS, zeroOptions, zeroMonitorAt, zeroMatches, zeroPairHit, bigCandleSupport, compareZero } from './zero-monitor.js';
-import { SINGLE_K_LEVELS, singleKOptions, singleKAt } from './single-k.js';
+import { SINGLE_K_LEVELS, SINGLE_K_CONFIRM, confirmLevelOf, singleKOptions, singleKAt } from './single-k.js';
 import { NN_INTERVALS, nnState } from './nn.js';
 import { PAIR_ZERO_PAIRS, pairZeroOptions, levelZeroAt, pairZeroHit, comparePairZero } from './pair-zero.js';
+import { reboundHit, reboundOptions, compareRebound } from './pair-rebound.js';
+import { HALF_PAIRS, halfHit, halfOptions, compareHalf } from './chan-half.js';
+import { DEAD_MA5_LEVELS, deadMa5At, zeroStateAt, deadMa5Options, compareDeadMa5 } from './dead-ma5.js';
+import { CROSS_PB_LEVELS, crossPullbackAt, crossPbOptions, compareCrossPb } from './cross-pullback.js';
 import { Watcher } from './watch.js';
 import { DEFAULT_WATCH_GROUPS } from './config.js';
 
@@ -414,80 +418,85 @@ export class Engine extends Emitter {
   }
 
   /**
-   * 「次级别回踩 / 主级别零轴」配对的报警扫描。
+   * 报警扫描：同时产出两套策略的报警。
    *
-   * 两道闸门同其他策略：
-   *   ① 状态跃迁 —— 同一 (币种|配对|方向) 只在「不成立 → 成立」时报一次；
-   *   ② 时效 —— 次级别K线必须刚收盘，否则是重启后翻出来的存量。
+   *   A) 连跌 N 根 · 首次收阳      variant=first
+   *   B) 零上死叉中 · 阳K站上MA5   variant=state
+   *
+   * 两套各自按 (币种|级别|变体) 做状态跃迁，互不干扰；
+   * 报警进历史（配对全景要用），但不推钉钉（noPush）。
    */
   pairZeroAlertSweep() {
-    if (this.cfg.pairZeroAlertEnabled === false) return;
-    const opt = pairZeroOptions({}, this.cfg);
+    const opt = deadMa5Options({}, this.cfg);
     const maxStale = (this.cfg.pairZeroAlertStaleSec ?? 120) * 1000;
     const minQv = this.cfg.pairZeroMinQuoteVolume ?? 0;
     const now = Date.now();
     for (const st of this.market.symbols.values()) {
       if (!st?.seeded) continue;
       if (!(st.rank > 0 && st.rank <= opt.topN)) continue;
-      const cache = new Map();
-      const zof = key => {
-        if (cache.has(key)) return cache.get(key);
-        const s = st.series?.[key];
-        let z = null;
+      for (const k of DEAD_MA5_LEVELS) {
+        const s = st.series?.[k];
+        let ci = -1, first = null, state = null;
         if (s && s.t.length >= 40) {
-          let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+          ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
           while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
-          if (ci >= 35) { try { z = levelZeroAt(s, s.ensure(), ci); } catch { z = null; } }
+          if (ci >= 30) {
+            let ind = null;
+            try { ind = s.ensure(); } catch { ind = null; }
+            if (ind) {
+              try { first = deadMa5At(s, ind, ci, opt); } catch { first = null; }
+              try { state = zeroStateAt(s, ind, ci, opt); } catch { state = null; }
+            }
+          }
         }
-        cache.set(key, z);
-        return z;
-      };
-      for (const p of PAIR_ZERO_PAIRS) {
-        const sub = zof(p.sub), main = zof(p.main);
-        if (!sub || !main) continue;
-        for (const dir of [1, -1]) {
-          const onKey = st.symbol + '|' + p.sub + '|' + p.main + '|' + dir;
-          const hit = pairZeroHit(sub, main, dir, opt);
-          const wasOn = this.pairZeroOn.get(onKey) === true;
-          if (!hit) { if (wasOn) this.pairZeroOn.set(onKey, false); continue; }
-          if (wasOn) continue;                                  // 状态持续中
-          if (maxStale > 0 && now - sub.at > maxStale) {        // 次级别刚收盘才报
-            this.pairZeroSkippedStale++; continue;
+        const hits = [first && { v: 'first', h: first }, state && { v: 'state', h: state }].filter(Boolean);
+
+        for (const v of ['first', 'state']) {
+          const onKey = st.symbol + '|' + k + '|' + v;
+          const found = hits.find(x => x.v === v);
+          if (!found) {
+            if (this.pairZeroOn.get(onKey) === true) this.pairZeroOn.set(onKey, false);
+            continue;
           }
-          if (minQv > 0 && !(Number(st.quoteVolume) >= minQv)) {
-            this.pairZeroSkippedQv++; continue;
-          }
+          if (this.pairZeroOn.get(onKey) === true) continue;   // 状态持续中
+          const h = found.h;
+          const closedAt = s.t[ci] + s.ms;
+          if (maxStale > 0 && now - closedAt > maxStale) { this.pairZeroSkippedStale++; continue; }
+          if (minQv > 0 && !(Number(st.quoteVolume) >= minQv)) { this.pairZeroSkippedQv++; continue; }
+
           this.pairZeroOn.set(onKey, true);
-          const key = 'pz|' + onKey + '|' + sub.at;
+          const key = 'dz|' + onKey + '|' + closedAt;
           if (this.pairZeroSeen.has(key)) continue;
           this.pairZeroSeen.set(key, now);
 
-          const up = dir > 0;
-          const subLabel = (LEVELS.find(l => l.key === p.sub) || {}).label || p.sub;
-          const mainLabel = (LEVELS.find(l => l.key === p.main) || {}).label || p.main;
+          const label = (LEVELS.find(l => l.key === k) || {}).label || k;
           const a = {
             kind: 'pairzero', id: ++this.alertSeq, symbol: st.symbol, mode: 'closed',
-            side: hit.dir, confirmed: true, score: 0,
-            sub: p.sub, main: p.main, pair: p.sub + '-' + p.main,
-            subLabel, mainLabel,
-            subDif: hit.subDif, subHold: hit.subHold, subPullBars: hit.subPullBars, subPeak: hit.subPeak,
-            mainDif: hit.mainDif, mainHold: hit.mainHold,
+            noPush: this.cfg.pairZeroAlertEnabled === false,
+            level: k, levelLabel: label,
+            sub: k, main: k, pair: label, subLabel: label, mainLabel: '',
+            side: 'long', dir: 'long', confirmed: true, score: 0,
             rank: st.rank ?? 0,
             price: Math.round((st.price ?? 0) * 1e8) / 1e8,
             changePct: Math.round((st.changePct ?? 0) * 100) / 100,
             quoteVolume: Math.round(st.quoteVolume ?? 0),
-            candleT: sub.at, ts: now,
-            initial: this.initialPhase,
-            text: `【${subLabel}→${mainLabel}】${up ? '主级别零轴上' : '主级别零轴下'}`
-              + `（DIF ${hit.mainDif > 0 ? '+' : ''}${Number(hit.mainDif).toPrecision(3)}，持续 ${hit.mainHold} 根），`
-              + `${subLabel} ${up ? '回踩' : '反弹'} ${hit.subPullBars} 根仍在零轴${up ? '上' : '下'}`
-              + `（DIF ${hit.subDif > 0 ? '+' : ''}${Number(hit.subDif).toPrecision(3)}）`,
+            variant: h.variant, variantLabel: h.variantLabel,
+            subPullBars: h.downBars ?? h.barsSinceDead,
+            mainDif: h.dif, subDif: h.ma5,
+            dif: h.dif, dea: h.dea, ma5: h.ma5,
+            deadT: h.deadT, deadDif: h.deadDif, deadDea: h.deadDea,
+            barsSinceDead: h.barsSinceDead, downBars: h.downBars,
+            open: h.open, close: h.close, bodyPct: h.bodyPct,
+            ts: closedAt, candleT: s.t[ci],
+            text: h.variant === 'state'
+              ? `${label} 零上死叉中（柱 ${h.hist}），阳线收 ${h.close} 站上 MA5 ${h.ma5}`
+              : `${label} 零上死叉（DIF ${h.deadDif}）后连跌 ${h.downBars} 根，首次收阳 ${h.close}`,
           };
           this.alerts.push(a);
           this.signalCount++;
           this.pairZeroCount++;
           this.emit('alert', a);
-          this.log.signal((up ? '🔴 ' : '🟢 ') + a.symbol + ' ' + a.text);
+          this.log.signal('🔴 ' + a.symbol + ' ' + a.text);
         }
       }
     }
@@ -521,13 +530,18 @@ export class Engine extends Emitter {
         if (ci < 30) continue;
         const closedAt = s.t[ci] + s.ms;
         const label = (LEVELS.find(l => l.key === k) || {}).label || k;
-        for (const dir of [1, -1]) {
+        // 只做多的「单K不破」时，不再扫空的「反弹」那一支
+        const dirs = this.cfg.singleKLongOnly === false ? [1, -1] : [1];
+        for (const dir of dirs) {
           const onKey = st.symbol + '|' + k + '|' + dir;
           let hit = null;
           const ind = s.ensure ? s.ensure() : null;   // 零轴筛选要读 DIF
           try { hit = singleKAt(s, ci, opt, dir, ind); } catch { hit = null; }
           const wasOn = this.singleKOn.get(onKey) === true;
-          if (!hit) { if (wasOn) this.singleKOn.set(onKey, false); continue; }
+          // 上级确认（例如 15分 → 2时 必须金叉同向）——
+          // 和页面用的是同一个判定，保证「推出去的就是页面上看到的」
+          const conf = hit ? this.singleKConfirm(st, k, dir, now) : null;
+          if (!hit || !conf) { if (wasOn) this.singleKOn.set(onKey, false); continue; }
           if (wasOn) continue;                                  // 状态持续中
           if (maxStale > 0 && now - closedAt > maxStale) {      // 刚收盘才报
             this.singleKSkippedStale++; continue;
@@ -555,7 +569,7 @@ export class Engine extends Emitter {
             changePct: Math.round((st.changePct ?? 0) * 100) / 100,
             quoteVolume: Math.round(st.quoteVolume ?? 0),
             bodyPct: hit.bodyPct, mult: hit.mult, retracePct: hit.retracePct,
-            barsAfter: hit.barsAfter, line: hit.line, bigT: hit.t,
+            barsAfter: hit.barsAfter, line: hit.line, bigT: hit.t, confirm: conf,
             open: hit.open, close: hit.close, low: hit.low, high: hit.high,
             candleT: s.t[ci], ts: now,
             zeroSide: hit.zeroSide, dif: hit.dif,
@@ -692,12 +706,27 @@ export class Engine extends Emitter {
           mainDif: a.mainDif, mainHold: a.mainHold,
           subDif: a.subDif, subHold: a.subHold,
           subPullBars: a.subPullBars, subPeak: a.subPeak, subPeakT: null, subAt: a.candleT,
+          levelLabel: a.levelLabel, barsSinceDead: a.barsSinceDead,
+          variant: a.variant, variantLabel: a.variantLabel,
+          ma5: a.ma5, deadDif: a.deadDif, deadDea: a.deadDea, deadT: a.deadT, close: a.close, downBars: a.downBars, barsSinceDead: a.barsSinceDead,
           price: a.price, changePct: a.changePct,
           quoteVolume: Math.round(st.quoteVolume ?? 0),   // 24h 成交额（实时取，不用报警里那份旧的）
           alertedAt: a.ts,
         },
       });
     }
+
+    // 记住被固定的币种，交给 market 保住它的行情状态
+    // （跌出涨跌幅榜/成交额榜时 symbols 会被删掉，卡片就没数据、凭空消失）
+    this.pinnedSince = this.pinnedSince || new Map();
+    for (const raw of (Array.isArray(pins) ? pins : [])) {
+      const sym = String(raw).split('|')[1];
+      if (sym) this.pinnedSince.set(sym, now);
+    }
+    for (const [sym, ts] of this.pinnedSince) {
+      if (now - ts > 30 * 60_000) this.pinnedSince.delete(sym);   // 半小时没再请求就放开
+    }
+    this.market.pinnedKeep = new Set(this.pinnedSince.keys());
 
     /* 用户「固定」的面板：即使它的报警已经从历史里过期清掉，也一定要画出来，
      * 否则钉住的图会突然消失。这里用当前行情现算一份元信息补上。 */
@@ -774,9 +803,12 @@ export class Engine extends Emitter {
           sub: h.sub, main: h.main, pair: h.pair,
           subLabel: h.subLabel, mainLabel: h.mainLabel,
           dir: h.dir, rank: h.rank,
-          mainDif: h.mainDif, mainHold: h.mainHold,
-          subDif: h.subDif, subHold: h.subHold,
-          subPullBars: h.subPullBars, subPeak: h.subPeak, subPeakT: h.subPeakT, subAt: h.subAt,
+          mainDif: h.deadDif, mainHold: null,     // 零轴上死叉那一刻的 DIF
+          subDif: h.ma5, subHold: null,             // 复用旧字段承载 MA5
+          subPullBars: h.barsSinceDead, subPeak: null, subPeakT: null, subAt: h.deadT,
+          levelLabel: h.levelLabel, barsSinceDead: h.barsSinceDead,
+          variant: h.variant, variantLabel: h.variantLabel,
+          ma5: h.ma5, deadDif: h.deadDif, deadDea: h.deadDea, deadT: h.deadT, close: h.close, downBars: h.downBars,
           price: h.price, changePct: h.changePct,
         },
       });
@@ -788,51 +820,326 @@ export class Engine extends Emitter {
   }
 
   /**
-   * 「次级别回踩 / 主级别零轴」配对扫描。
+   * 「背驰 50%」策略：多级别（6 组配对）+ 缠论笔 + 50% 分位。
    *
-   * 七组配对（次 → 主）：5m-30m / 10m-1h / 15m-2h / 30m-3h / 1h-6h / 2h-12h / 4h-1d
-   * 多：主级别 DIF 在零轴上，次级别也在零轴上并且已经回踩 ≥ N 根
-   * 空：镜像（零轴下 + 反弹 ≥ N 根且没上穿）
+   * 方向固定对应：主级别 DIF 零轴上 → 只做多（找向下一笔的反弹）；
+   *               零轴下 → 只做空（找向上一笔的回落）。
+   *
+   * 次级别：最后一笔高低点之间 ≥5 根K线，且回调/反弹 ≥5 根；
+   *         价格最近 2 根已收盘K线内越过该笔的 50%（high+low)/2。
+   *
+   * 提醒分两种，都产出：
+   *   mode1 = 背驰 + 突破 50%（MACD 面积比前一笔小且创新低/新高）
+   *   mode2 = 单纯突破 50%
+   *
+   * 只读、不推送。
    */
-  pairZeroScan(input = {}) {
-    const opt = pairZeroOptions(input, this.cfg);
+  chanHalfCharts(bars = 120, limit = 200, input = {}) {
+    const opt = halfOptions(input, this.cfg);
     const now = Date.now();
-    const items = [];
-    let skippedStale = 0;
+    const hits = [];
+
     for (const sym of this.market.universe) {
       const st = this.market.symbols.get(sym);
       if (!st?.seeded) continue;
       if (!(st.rank > 0 && st.rank <= opt.topN)) continue;
 
-      // 同一个币的级别状态只算一次（七组配对共用）
-      const cache = new Map();
-      const zof = key => {
-        if (cache.has(key)) return cache.get(key);
+      // 主级别只要 DIF 的正负，按 key 缓存
+      const zcache = new Map();
+      const axisOf = key => {
+        if (zcache.has(key)) return zcache.get(key);
         const s = st.series?.[key];
-        let z = null;
+        let out = null;
         if (s && s.t.length >= 40) {
           let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
           while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
           if (ci >= 35) {
-            try { z = levelZeroAt(s, s.ensure(), ci); } catch { z = null; }
+            try {
+              const z = levelZeroAt(s, s.ensure(), ci);
+              if (z) out = z.dif > 0 ? 'above' : 'below';
+            } catch { out = null; }
           }
         }
-        cache.set(key, z);
-        return z;
+        zcache.set(key, out);
+        return out;
+      };
+
+      for (const p of HALF_PAIRS) {
+        const axis = axisOf(p.main);
+        if (!axis) continue;
+        if (opt.axis !== 'all' && axis !== opt.axis) continue;
+        const side = axis === 'above' ? 'down' : 'up';
+
+        const subS = st.series?.[p.sub];
+        if (!subS || subS.t.length < 40) continue;
+        let ci = Math.min(subS.lastClosedIndex ?? subS.t.length - 1, subS.t.length - 1);
+        while (ci >= 0 && subS.t[ci] + subS.ms > now) ci--;
+        if (ci < 40) continue;
+
+        let hit = null;
+        try {
+          const chan = subS.ensureChan(opt.minBars);
+          hit = halfHit(chan, subS, ci, side, opt);
+        } catch { hit = null; }
+        if (!hit) continue;
+        if (opt.mode === '1' && !hit.mode1) continue;
+        if (opt.mode === '2' && !hit.mode2) continue;
+
+        hits.push({
+          symbol: sym,
+          sub: p.sub, main: p.main, pair: p.sub + '-' + p.main,
+          subLabel: (LEVELS.find(l => l.key === p.sub) || {}).label || p.sub,
+          mainLabel: (LEVELS.find(l => l.key === p.main) || {}).label || p.main,
+          rank: st.rank,
+          axis,
+          dir: side === 'down' ? 'long' : 'short',
+          price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+          changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+          quoteVolume: Math.round(st.quoteVolume ?? 0),
+          ...hit,
+        });
+      }
+    }
+
+    hits.sort(compareHalf);
+    const cap = Math.max(1, Math.min(400, Number(limit) || 200));
+    const items = [];
+    for (const h of hits.slice(0, cap)) {
+      const st = this.market.symbols.get(h.symbol);
+      const lvl = st && this.levelPayload(st, h.sub, bars);
+      if (!lvl) continue;
+      items.push({
+        ...lvl, symbol: h.symbol, kind: 'half', side: h.dir,
+        pair: {
+          sub: h.sub, main: h.main, pair: h.pair,
+          subLabel: h.subLabel, mainLabel: h.mainLabel,
+          dir: h.dir, rank: h.rank, axis: h.axis,
+          price: h.price, changePct: h.changePct, quoteVolume: h.quoteVolume,
+          stroke: h.stroke, pullBars: h.pullBars, crossAt: h.crossAt,
+          crossPct: h.crossPct, divergence: h.divergence,
+          mode1: h.mode1, mode2: h.mode2, label: h.label,
+        },
+      });
+    }
+
+    return {
+      generatedAt: now, total: hits.length,
+      longs: hits.filter(i => i.dir === 'long').length,
+      shorts: hits.filter(i => i.dir === 'short').length,
+      mode1: hits.filter(i => i.mode1).length,
+      mode2: hits.filter(i => !i.mode1).length,
+      shown: items.length, limit: cap, bars,
+      options: opt, pairs: HALF_PAIRS, items,
+    };
+  }
+
+  /**
+   * 「金叉回踩 / 死叉反弹」策略。
+   *
+   * 多级别（15分~12小时）各自独立：
+   *   做多：金叉后走出阳线，回踩第 N 根阴线 → 提醒
+   *   做空：死叉后走出阴线，反弹第 N 根阳线 → 提醒
+   *
+   * @param {object} input { depth: 1|2, axis: 'all'|'above'|'below' }
+   */
+  crossPullbackCharts(bars = 120, limit = 200, input = {}) {
+    const opt = crossPbOptions(input, this.cfg);
+    const now = Date.now();
+    const items = [];
+    for (const sym of this.market.universe) {
+      const st = this.market.symbols.get(sym);
+      if (!st?.seeded) continue;
+      if (!(st.rank > 0 && st.rank <= opt.topN)) continue;
+      for (const k of CROSS_PB_LEVELS) {
+        if (opt.level !== 'all' && k !== opt.level) continue;   // 级别筛选
+        const s = st.series?.[k];
+        if (!s || s.t.length < 40) continue;
+        let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+        while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
+        if (ci < 30) continue;
+        // 必须基于**最新一根已收盘K线**：数据超过一个周期没更新（停更/缓存过期）就不算
+        if (now - (s.t[ci] + s.ms) >= s.ms + 90_000) continue;
+        let ind = null;
+        try { ind = s.ensure(); } catch { ind = null; }
+        if (!ind) continue;
+        let hit = null;
+        try { hit = crossPullbackAt(s, ind, ci, opt); } catch { hit = null; }
+        if (!hit) continue;
+        const label = (LEVELS.find(l => l.key === k) || {}).label || k;
+        const lvl = this.levelPayload(st, k, bars);
+        if (!lvl) continue;
+        items.push({
+          ...lvl, symbol: sym, kind: 'crosspb', side: hit.dir, at: hit.at,
+          pair: {
+            sub: k, main: k, pair: label, subLabel: label, mainLabel: '',
+            levelLabel: label, dir: hit.dir, rank: st.rank,
+            crossDif: hit.crossDif, crossDea: hit.crossDea, crossT: hit.crossT,
+            axisSide: hit.axisSide, depth: hit.depth,
+            barsSinceCross: hit.barsSinceCross, pullFirst: hit.pullFirst, surge: hit.surge,
+            open: hit.open, close: hit.close, pivot: hit.pivot,
+            variant: hit.variant, variantLabel: hit.variantLabel,
+            price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+            changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+            quoteVolume: Math.round(st.quoteVolume ?? 0),
+          },
+        });
+      }
+    }
+    items.sort((x, y) => compareCrossPb({ at: x.at, barsSinceCross: x.pair.barsSinceCross }, { at: y.at, barsSinceCross: y.pair.barsSinceCross }));
+    const cap = Math.max(1, Math.min(400, Number(limit) || 200));
+    return {
+      generatedAt: now, total: items.length,
+      longs: items.filter(i => i.side === 'long').length,
+      shorts: items.filter(i => i.side === 'short').length,
+      shown: Math.min(items.length, cap), limit: cap, bars,
+      options: opt, levels: CROSS_PB_LEVELS,
+      items: items.slice(0, cap),
+    };
+  }
+
+
+  /**
+   * 「配对反转提醒」：配对共振成立 **且** 次级别满足反转条件。
+   *
+   * 与 pairZeroCharts 的区别：
+   *   · 不看报警历史，而是**实时**用当前行情算（本页不推送，只在界面看）
+   *   · 在共振成立的基础上，额外要求次级别「回踩 ≥ N 根 + 连续两根阳K + 低点抬高」
+   *
+   * @param {number} bars 每张图画多少根K线
+   * @param {number} limit 最多返回多少条
+   * @param {object} input 覆盖项：minPullBars / topN / side
+   */
+  pairReboundCharts(bars = 120, limit = 200, input = {}) {
+    const opt = reboundOptions(input, this.cfg);
+    const zopt = pairZeroOptions(input, this.cfg);
+    const now = Date.now();
+    const hits = [];
+
+    for (const sym of this.market.universe) {
+      const st = this.market.symbols.get(sym);
+      if (!st?.seeded) continue;
+      if (!(st.rank > 0 && st.rank <= opt.topN)) continue;
+
+      // 同一个币的级别只算一次（七组配对共用），顺带把 series 和收盘下标留住
+      const cache = new Map();
+      const zof = key => {
+        if (cache.has(key)) return cache.get(key);
+        const s = st.series?.[key];
+        let out = null;
+        if (s && s.t.length >= 40) {
+          let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+          while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
+          if (ci >= 35) {
+            try {
+              const z = levelZeroAt(s, s.ensure(), ci);
+              if (z) out = { z, series: s, idx: ci };
+            } catch { out = null; }
+          }
+        }
+        cache.set(key, out);
+        return out;
       };
 
       for (const p of PAIR_ZERO_PAIRS) {
         const sub = zof(p.sub), main = zof(p.main);
         if (!sub || !main) continue;
         for (const dir of [1, -1]) {
-          const hit = pairZeroHit(sub, main, dir, opt);
+          const hit = pairZeroHit(sub.z, main.z, dir, zopt);
           if (!hit) continue;
           if (opt.side !== 'all' && hit.dir !== opt.side) continue;
-          items.push({
+          // 反转头只认次级别：主级别管方向，次级别管时机
+          const rb = reboundHit(sub.series, sub.idx, dir, opt.minPullBars, hit.subPullBars);
+          if (!rb) continue;
+          hits.push({
             symbol: sym,
             sub: p.sub, main: p.main, pair: p.sub + '-' + p.main,
             subLabel: (LEVELS.find(l => l.key === p.sub) || {}).label || p.sub,
             mainLabel: (LEVELS.find(l => l.key === p.main) || {}).label || p.main,
+            rank: st.rank,
+            price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+            changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+            quoteVolume: Math.round(st.quoteVolume ?? 0),
+            subMinutes: (LEVELS.find(l => l.key === p.sub) || {}).minutes || 15,
+            ...hit,
+            rebound: rb,
+          });
+        }
+      }
+    }
+
+    hits.sort(compareRebound);
+    const cap = Math.max(1, Math.min(400, Number(limit) || 200));
+    const items = [];
+    for (const h of hits.slice(0, cap)) {
+      const st = this.market.symbols.get(h.symbol);
+      const lvl = st && this.levelPayload(st, h.sub, bars);
+      if (!lvl) continue;
+      items.push({
+        ...lvl, symbol: h.symbol, kind: 'pair', side: h.dir,
+        pair: {
+          sub: h.sub, main: h.main, pair: h.pair,
+          subLabel: h.subLabel, mainLabel: h.mainLabel,
+          dir: h.dir, rank: h.rank,
+          mainDif: h.mainDif, mainHold: h.mainHold,
+          subDif: h.subDif, subHold: h.subHold,
+          subPullBars: h.subPullBars, subPeak: h.subPeak, subPeakT: h.subPeakT, subAt: h.subAt,
+          price: h.price, changePct: h.changePct,
+          quoteVolume: h.quoteVolume,
+          rebound: h.rebound,
+        },
+      });
+    }
+
+    return {
+      generatedAt: now, total: hits.length,
+      longs: hits.filter(i => i.dir === 'long').length,
+      shorts: hits.filter(i => i.dir === 'short').length,
+      shown: items.length, limit: cap, bars,
+      options: opt, pairs: PAIR_ZERO_PAIRS, items,
+    };
+  }
+
+  /**
+   * 「零轴上死叉 → 回调 → 阳K站上 MA5」扫描。
+   *
+   * 替换了原来的配对共振逻辑。监控级别：
+   *   15分 / 30分 / 1小时 / 2小时 / 3小时 / 6小时 / 12小时
+   *
+   * 每个 (币种 × 级别) 独立判定，只做多：
+   *   零轴上死叉 → 死叉后 ≥N 根 → 出现阳线 → 收盘刚上穿 MA5
+   */
+  pairZeroScan(input = {}) {
+    const opt = deadMa5Options(input, this.cfg);
+    const now = Date.now();
+    const items = [];
+    for (const sym of this.market.universe) {
+      const st = this.market.symbols.get(sym);
+      if (!st?.seeded) continue;
+      if (!(st.rank > 0 && st.rank <= opt.topN)) continue;
+      for (const k of DEAD_MA5_LEVELS) {
+        const s = st.series?.[k];
+        if (!s || s.t.length < 40) continue;
+        let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+        while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
+        if (ci < 30) continue;
+        // 必须基于**最新一根已收盘K线**：数据超过一个周期没更新就不算
+        if (now - (s.t[ci] + s.ms) >= s.ms + 90_000) continue;
+        let ind = null;
+        try { ind = s.ensure(); } catch { ind = null; }
+        if (!ind) continue;
+        // 两套策略并列：A 连跌N根·首次收阳 / B 零上死叉中·阳K站上MA5
+        let first = null, state = null;
+        try { first = deadMa5At(s, ind, ci, opt); } catch { first = null; }
+        try { state = zeroStateAt(s, ind, ci, opt); } catch { state = null; }
+        const label = (LEVELS.find(l => l.key === k) || {}).label || k;
+        for (const hit of [first, state]) {
+          if (!hit) continue;
+          items.push({
+            symbol: sym,
+            level: k, levelLabel: label,
+            // 兼容前端既有字段：单级别策略，sub/main 都指向同一个级别
+            sub: k, main: k, pair: label,
+            subLabel: label, mainLabel: '',
             rank: st.rank,
             price: Math.round((st.price ?? 0) * 1e8) / 1e8,
             changePct: Math.round((st.changePct ?? 0) * 100) / 100,
@@ -842,12 +1149,11 @@ export class Engine extends Emitter {
         }
       }
     }
-    items.sort(comparePairZero);
+    items.sort(compareDeadMa5);
     return {
       t: now, total: items.length,
-      longs: items.filter(i => i.dir === 'long').length,
-      shorts: items.filter(i => i.dir === 'short').length,
-      pairs: PAIR_ZERO_PAIRS, options: opt, items,
+      longs: items.length, shorts: 0,
+      pairs: DEAD_MA5_LEVELS, options: opt, items,
     };
   }
 
@@ -946,12 +1252,49 @@ export class Engine extends Emitter {
           open: h.open, close: h.close,
           bigT: h.t, price: h.price, changePct: h.changePct, quoteVolume: h.quoteVolume,
           minClose: h.minClose, maxClose: h.maxClose, at: h.at,
+          confirm: h.confirm || null,
         },
       });
     }
     return {
       generatedAt: scan.t, total: scan.total, shown: items.length, limit, bars,
       topN: scan.topN, levels: SINGLE_K_LEVELS, options: scan.options, items,
+    };
+  }
+
+  /**
+   * 单K的「上级确认」：确认级别要和单K同方向，并且该级别处于对应的交叉状态。
+   *
+   *   做多：确认级别 DIF > DEA（金叉状态）
+   *   做空：确认级别 DIF < DEA（死叉状态）
+   *
+   * @returns {object|null} 命中返回可展示的信息，否则 null
+   */
+  singleKConfirm(st, level, dir, now) {
+    const key = confirmLevelOf(level);
+    if (!key) return null;
+    const s = st.series?.[key];
+    if (!s || s.t.length < 40) return null;
+    let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+    while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
+    if (ci < 35) return null;
+    let ind = null;
+    try { ind = s.ensure(); } catch { return null; }
+    const m = ind?.macd;
+    if (!m) return null;
+    const dif = m.dif[ci], dea = m.dea[ci];
+    if (!Number.isFinite(dif) || !Number.isFinite(dea)) return null;
+    const golden = dif > dea;                 // 金叉状态（DIF 在 DEA 上方）
+    const agree = dir > 0 ? golden : !golden; // 做多要金叉，做空要死叉
+    if (!agree) return null;
+    return {
+      level: key,
+      label: (LEVELS.find(l => l.key === key) || {}).label || key,
+      dif: Math.round(dif * 1e8) / 1e8,
+      dea: Math.round(dea * 1e8) / 1e8,
+      golden,
+      agree,
+      cross: golden ? '金叉' : '死叉',
     };
   }
 
@@ -980,13 +1323,18 @@ export class Engine extends Emitter {
         // 过期数据不入榜（与零轴监控同一套保护）
         if (now - (s.t[ci] + s.ms) >= s.ms + 90_000) continue;
         const label = (LEVELS.find(l => l.key === k) || {}).label || k;
-        for (const dir of [1, -1]) {
+        // 只做多的「单K不破」时，不再扫空的「反弹」那一支
+        const dirs = this.cfg.singleKLongOnly === false ? [1, -1] : [1];
+        for (const dir of dirs) {
           let hit = null;
           const ind = s.ensure ? s.ensure() : null;   // 零轴筛选要读 DIF
           try { hit = singleKAt(s, ci, opt, dir, ind); } catch { hit = null; }
           if (!hit) continue;
+          // 上级确认：不同方向或确认级别没有对应交叉状态的，直接丢弃
+          const conf = this.singleKConfirm(st, k, dir, now);
+          if (!conf) continue;
           items.push({
-            symbol: sym, level: k, levelLabel: label, side: hit.dir,
+            symbol: sym, level: k, levelLabel: label, side: hit.dir, confirm: conf,
             rank: st.rank, price: Math.round((st.price ?? 0) * 1e8) / 1e8,
             changePct: Math.round((st.changePct ?? 0) * 100) / 100,
             quoteVolume: Math.round(st.quoteVolume ?? 0),
@@ -1231,6 +1579,16 @@ export class Engine extends Emitter {
 
   stats() {
     return {
+      sweepCount: this.sweepCount,
+      pinned: {
+        // 被固定的币种：pinnedSince 是我们记的，pinnedKeep 是交给 market 的
+        since: (this.pinnedSince ? this.pinnedSince.size : 0),
+        keep: (this.market.pinnedKeep ? this.market.pinnedKeep.size : 0),
+        list: this.pinnedSince ? [...this.pinnedSince.keys()] : [],
+        inUniverse: this.pinnedSince
+          ? [...this.pinnedSince.keys()].filter(s => this.market.universe.includes(s))
+          : [],
+      },
       sweepCount: this.sweepCount,
       lastSweepMs: this.lastSweepMs,
       lastSweepAt: this.lastSweepAt,
