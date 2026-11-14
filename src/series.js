@@ -162,6 +162,14 @@ export class CandleSeries {
     const first = rows[0].t;
     const n = this.t.length;
     if (!n || this.t[n - 1] < first) {          // 旧数据全在新数据之前 → 直接追加
+      // ⚠ 但如果旧尾巴和新数据之间隔了**一大段**（休眠 / 断线留下的洞），
+      //   直接丢掉旧的：那条空洞会永久留在系列里，把均线和 MACD 全算歪。
+      //   只丢「大洞」（> 20 根），偶尔漏一两根不影响，保留历史更重要。
+      if (n && this.ms > 0 && first - this.t[n - 1] > this.ms * 20) {
+        this.t.length = 0; this.o.length = 0; this.h.length = 0; this.l.length = 0;
+        this.c.length = 0; this.v.length = 0; this.q.length = 0; this.n.length = 0;
+        this.done.length = 0;
+      }
       for (const r of rows) {
         this.t.push(r.t); this.o.push(r.o); this.h.push(r.h); this.l.push(r.l);
         this.c.push(r.c); this.v.push(r.v); this.q.push(r.q); this.n.push(r.n); this.done.push(r.done);

@@ -1,170 +1,219 @@
 /**
- * 「阳包阴 / 阴包阳 → 回踩」策略（原「金叉回踩」，本轮去掉金叉、也去掉多根反包）。
+ * 「阳内阴回踩」策略。
  *
- * 监控级别：15分 / 30分 / 1小时 / 2小时 / 3小时 / 6小时 / 12小时（各自独立）
+ * 监控级别：15分 / 30分 / 1小时 / 2小时 / 3小时 / 4小时 / 6小时 / 12小时（各自独立）
  *
- * 形态：
- *   做多：**阳包阴** —— 一根阳线的实体完全包住前一根阴线的实体
- *          （收 ≥ 前一根开盘，开 ≤ 前一根收盘）
- *   做空：**阴包阳** —— 一根阴线的实体完全包住前一根阳线的实体
+ * 形态（看最新一根**已收盘**K线）：
+ *   ① 前一根是**阳线**（收 > 开）
+ *   ② 当前这根是**阴线**（收 < 开）
+ *   ③ 当前这根**被前一根阳线完全包含**：最高 ≤ 前最高，最低 ≥ 前最低
+ *   ④ 收盘**没有跌破**前一根阳线的开盘价（收 ≥ 前开盘）
  *
- * 触发：
- *   包覆成立后，先继续同向走，**第一次出现反向K线**就提醒（回踩 / 反弹开始），
- *   可以是第 1 根或第 2 根（由「回踩根数」筛选栏决定）。
+ * 含义：涨了一根之后小幅回踩，整根K线都缩在阳线里面，收盘还守在阳线实体底部之上 ——
+ * 抛压不大，是回踩而不是反转。
  *
- * 量能：包覆那根要有量（成交量 ≥ 近 5 根均量 × volMult，默认 1.5）。
- * 零轴：看包覆那一刻 DIF 在零轴哪一侧（只作筛选/标注，不参与方向判断）。
+ * 筛选：级别、零轴位置（按当前这根收盘时的 DIF 判）。
  */
 
-export const CROSS_PB_LEVELS = ['15m', '30m', '1h', '2h', '3h', '6h', '12h'];
-
-/** 近 n 根均量（不含第 i 根本身） */
-function avgVol(series, i, n = 5) {
-  const v = series.v;
-  if (!v) return 0;
-  let s = 0, c = 0;
-  for (let k = 1; k <= n; k++) {
-    const j = i - k;
-    if (j >= 0 && Number.isFinite(v[j])) { s += v[j]; c++; }
-  }
-  return c ? s / c : 0;
-}
-
-/**
- * 判断第 i 根是否是「实体包覆」。
- * @param {number} dir 1 = 阳包阴（前一根是阴），-1 = 阴包阳（前一根是阳）
- * @returns {{dir:number, volRatio:number, gainPct:number}|null}
- */
-function engulfAt(series, i, dir, opt) {
-  if (i < 1) return null;
-  const o = series.o, c = series.c;
-  const o0 = o[i - 1], c0 = c[i - 1], o1 = o[i], c1 = c[i];
-  if (![o0, c0, o1, c1].every(Number.isFinite)) return null;
-
-  if (dir > 0) {
-    if (!(c0 < o0)) return null;            // 前一根必须是阴
-    if (!(c1 > o1)) return null;            // 这根必须是阳
-    if (!(c1 >= o0)) return null;           // 阳线收盘 ≥ 阴线开盘
-    if (!(o1 <= c0)) return null;           // 阳线开盘 ≤ 阴线收盘
-  } else {
-    if (!(c0 > o0)) return null;            // 前一根必须是阳
-    if (!(c1 < o1)) return null;            // 这根必须是阴
-    if (!(o1 >= c0)) return null;           // 阴线开盘 ≥ 阳线收盘
-    if (!(c1 <= o0)) return null;           // 阴线收盘 ≤ 阳线开盘
-  }
-
-  const av = avgVol(series, i, 5);
-  const mult = Math.max(0, Number(opt.volMult ?? 1.5));
-  const volRatio = av > 0 ? series.v[i] / av : 0;
-  if (mult > 0 && !(volRatio >= mult)) return null;
-
-  const gain = ((c1 - o1) / o1) * 100;
-  return {
-    dir,
-    volRatio: Math.round(volRatio * 100) / 100,
-    gainPct: Math.round(gain * 100) / 100,
-  };
-}
+export const CROSS_PB_LEVELS = ['15m', '30m', '1h', '2h', '3h', '4h', '6h', '12h'];
 
 /**
  * @param {object} series 该级别K线
  * @param {object} ind series.ensure()（要 macd.dif 判零轴）
  * @param {number} idx 最后一根已收盘K线下标
- * @param {object} opt { depth, axis, volMult, lookbackBars }
+ * @param {object} opt { axis, level }
  */
 export function crossPullbackAt(series, ind, idx, opt = {}) {
-  if (!series || !Number.isFinite(idx) || idx < 20) return null;
-  // depth = 0 → 包覆那根收盘就提醒（默认）；1/2 → 等回踩第 N 根反向K线
-  const depth = Math.max(0, Math.min(2, Number(opt.depth) || 0));
+  if (!series || !Number.isFinite(idx) || idx < 2) return [];
   const axis = opt.axis === 'above' || opt.axis === 'below' ? opt.axis : 'all';
-  const look = Math.max(10, Math.min(120, Number(opt.lookbackBars ?? 60)));
-  const o = series.o, c = series.c;
+  const want = opt.side === 'long' || opt.side === 'short' ? opt.side : 'all';
+  // inner = 只单K包覆；dbl = 只双K包覆；all = 全部
+  const pat = opt.pattern === 'dbl' ? 'dbl' : opt.pattern === 'inner' ? 'inner' : 'all';
 
-  // 从当前（或往前）找最近一次「包覆」
-  const start = depth === 0 ? idx : idx - 1;
-  for (let i = start; i >= Math.max(1, idx - look); i--) {
-    for (const dir of [1, -1]) {
-      const eng = engulfAt(series, i, dir, opt);
-      if (!eng) continue;
+  const o = series.o, c = series.c, h = series.h, l = series.l;
+  const i = idx;          // 当前：被包含的那根
+  const s = idx - 1;      // 前一根：包含者
+  if (s < 0) return [];
+  const so = o[s], sc = c[s], sh = h[s], sl = l[s];
+  const co = o[i], cc = c[i], ch = h[i], cl = l[i];
+  if (![so, sc, sh, sl, co, cc, ch, cl].every(Number.isFinite)) return [];
 
-      let f = i;                                            // 触发那根的索引
-      if (depth === 0) {
-        // 最新的收盘K 本身就是包覆K线 —— 直接提醒
-        if (i !== idx) continue;
-      } else {
-        // 包覆之后第一根反向K线
-        f = -1;
-        for (let k = i + 1; k <= idx; k++) {
-          if (!Number.isFinite(c[k]) || !Number.isFinite(o[k])) break;
-          const isReverse = dir > 0 ? (c[k] < o[k]) : (c[k] > o[k]);
-          if (isReverse) { f = k; break; }
-        }
-        if (f < 0) continue;                                // 还没开始回踩
-        if (idx !== f + depth - 1) continue;                // 当前正好是第 depth 根
-        let allReverse = true;
-        for (let k = f; k <= idx; k++) {
-          const isReverse = dir > 0 ? (c[k] < o[k]) : (c[k] > o[k]);
-          if (!isReverse) { allReverse = false; break; }
-        }
-        if (!allReverse) continue;
-      }
+  // 零轴：按当前这根收盘时的 DIF
+  const m = ind?.macd;
+  const difv = m?.dif ? m.dif[i] : NaN;
+  const deav = m?.dea ? m.dea[i] : NaN;
+  const axisSide = Number.isFinite(difv) ? (difv > 0 ? 'above' : 'below') : 'above';
+  if (axis !== 'all') {
+    if (!Number.isFinite(difv)) return [];
+    if (axisSide !== axis) return [];
+  }
 
-      // 零轴：看包覆那一刻的 DIF
-      const m = ind?.macd;
-      const difv = m?.dif ? m.dif[i] : NaN;
-      const deav = m?.dea ? m.dea[i] : NaN;
-      const axisSide = Number.isFinite(difv) ? (difv > 0 ? 'above' : 'below') : 'above';
-      if (axis !== 'all') {
-        if (!Number.isFinite(difv)) continue;
-        if (axisSide !== axis) continue;
-      }
+  const out = [];
 
-      return {
-        dir: dir > 0 ? 'long' : 'short',
+  // ① 阳内阴（做多）：前一根阳线，当前阴线被它完全包含，收盘没跌破阳线最低价
+  if (want !== 'short' && pat !== 'dbl') {
+    const okYangYin = (sc > so) && (cc < co)
+      && (ch <= sh) && (cl >= sl)
+      && (cc >= sl);
+    if (okYangYin) {
+      const retrace = ((sc - cc) / (sc - so)) * 100;   // 阴线回吐阳线实体的百分比
+      out.push({
+        dir: 'long',
         crossIdx: i,
         crossT: series.t[i] + series.ms,
         crossDif: Number.isFinite(difv) ? Math.round(difv * 1e8) / 1e8 : 0,
         crossDea: Number.isFinite(deav) ? Math.round(deav * 1e8) / 1e8 : 0,
         axisSide,
-        depth,
-        barsSinceCross: idx - i,
-        pivot: { o: o[i], c: c[i], t: series.t[i] + series.ms },
-        pullFirst: Math.round(c[f] * 1e8) / 1e8,
-        surge: { gainPct: eng.gainPct, volRatio: eng.volRatio },
-        open: o[idx], close: c[idx],
-        at: series.t[idx] + series.ms,
-        variant: dir > 0 ? 'long' : 'short',
-        variantLabel: dir > 0 ? '阳包阴' : '阴包阳',
-        depthLabel: depth === 0 ? '当根' : ('回踩 ' + depth + ' 根'),
-      };
+        depth: 0, depthLabel: '当根', barsSinceCross: 0,
+        pivot: { o: so, c: sc, h: sh, l: sl, t: series.t[s] + series.ms },
+        pullFirst: Math.round(cc * 1e8) / 1e8,
+        surge: {
+          gainPct: Math.round(((cc - co) / co) * 10000) / 100,
+          volRatio: 0,
+          retrace: Math.round(retrace * 100) / 100,
+        },
+        open: co, close: cc, high: ch, low: cl,
+        prevOpen: so, prevClose: sc, prevHigh: sh, prevLow: sl,
+        at: series.t[i] + series.ms,
+        variant: 'long',
+        variantLabel: '阳内阴（回吐 ' + Math.round(retrace) + '%）',
+      });
     }
   }
-  return null;
+
+  // ② 阴内阳（做空）：前一根阴线，当前阳线被它完全包含，收盘没涨破阴线最高价
+  if (want !== 'long' && pat !== 'dbl') {
+    const okYinYang = (sc < so) && (cc > co)
+      && (ch <= sh) && (cl >= sl)
+      && (cc <= sh);
+    if (okYinYang) {
+      const retrace = ((cc - sc) / (so - sc)) * 100;   // 阳线收复阴线实体的百分比
+      out.push({
+        dir: 'short',
+        crossIdx: i,
+        crossT: series.t[i] + series.ms,
+        crossDif: Number.isFinite(difv) ? Math.round(difv * 1e8) / 1e8 : 0,
+        crossDea: Number.isFinite(deav) ? Math.round(deav * 1e8) / 1e8 : 0,
+        axisSide,
+        depth: 0, depthLabel: '当根', barsSinceCross: 0,
+        pivot: { o: so, c: sc, h: sh, l: sl, t: series.t[s] + series.ms },
+        pullFirst: Math.round(cc * 1e8) / 1e8,
+        surge: {
+          gainPct: Math.round(((cc - co) / co) * 10000) / 100,
+          volRatio: 0,
+          retrace: Math.round(retrace * 100) / 100,
+        },
+        open: co, close: cc, high: ch, low: cl,
+        prevOpen: so, prevClose: sc, prevHigh: sh, prevLow: sl,
+        at: series.t[i] + series.ms,
+        variant: 'short',
+        variantLabel: '阴内阳（收回 ' + Math.round(retrace) + '%）',
+      });
+    }
+  }
+
+  // ③ 双阳包一阴（做多）：前两根都是阳线，合起来包住更前面那根阴线的实体
+  if (want !== 'short' && pat !== 'inner') {
+    const y = idx - 2;
+    if (y >= 0) {
+      const yo2 = o[y], yc2 = c[y];
+      const a1o = o[y + 1], a1c = c[y + 1];
+      const a2o = o[i], a2c = c[i];
+      if ([yo2, yc2, a1o, a1c, a2o, a2c].every(Number.isFinite)
+        && yc2 < yo2                       // 被包的那根是阴
+        && a1c > a1o && a2c > a2o          // 两根都是阳
+        && a1o <= yc2                      // 第一根阳线开盘 ≤ 阴线收盘
+        && a2c >= yo2) {                   // 第二根阳线收盘 ≥ 阴线开盘
+        const retrace = Math.max(0, Math.min(100, ((a2c - yc2) / (yo2 - yc2)) * 100));   // 包住了阴线实体的百分之多少
+        out.push({
+          dir: 'long',
+          crossIdx: i,
+          crossT: series.t[i] + series.ms,
+          crossDif: Number.isFinite(difv) ? Math.round(difv * 1e8) / 1e8 : 0,
+          crossDea: Number.isFinite(deav) ? Math.round(deav * 1e8) / 1e8 : 0,
+          axisSide,
+          depth: 0, depthLabel: '当根', barsSinceCross: 0,
+          pivot: { o: yo2, c: yc2, h: h[y], l: l[y], t: series.t[y] + series.ms },
+          pullFirst: Math.round(a2c * 1e8) / 1e8,
+          surge: {
+            gainPct: Math.round(((a2c - a2o) / a2o) * 10000) / 100,
+            volRatio: 0,
+            retrace: Math.round(retrace * 100) / 100,
+          },
+          open: a2o, close: a2c, high: h[i], low: l[i],
+          prevOpen: yo2, prevClose: yc2, prevHigh: h[y], prevLow: l[y],
+          at: series.t[i] + series.ms,
+          variant: 'long',
+          variantLabel: '双阳包阴（包住 ' + Math.round(retrace) + '%）',
+        });
+      }
+    }
+  }
+
+  // ④ 双阴包一阳（做空）：前两根都是阴线，合起来包住更前面那根阳线的实体
+  if (want !== 'long' && pat !== 'inner') {
+    const y = idx - 2;
+    if (y >= 0) {
+      const yo2 = o[y], yc2 = c[y];
+      const a1o = o[y + 1], a1c = c[y + 1];
+      const a2o = o[i], a2c = c[i];
+      if ([yo2, yc2, a1o, a1c, a2o, a2c].every(Number.isFinite)
+        && yc2 > yo2                       // 被包的那根是阳
+        && a1c < a1o && a2c < a2o          // 两根都是阴
+        && a1o >= yc2                      // 第一根阴线开盘 ≥ 阳线收盘
+        && a2c <= yo2) {                   // 第二根阴线收盘 ≤ 阳线开盘
+        const retrace = Math.max(0, Math.min(100, ((yc2 - a2c) / (yc2 - yo2)) * 100));   // 包住了阳线实体的百分之多少
+        out.push({
+          dir: 'short',
+          crossIdx: i,
+          crossT: series.t[i] + series.ms,
+          crossDif: Number.isFinite(difv) ? Math.round(difv * 1e8) / 1e8 : 0,
+          crossDea: Number.isFinite(deav) ? Math.round(deav * 1e8) / 1e8 : 0,
+          axisSide,
+          depth: 0, depthLabel: '当根', barsSinceCross: 0,
+          pivot: { o: yo2, c: yc2, h: h[y], l: l[y], t: series.t[y] + series.ms },
+          pullFirst: Math.round(a2c * 1e8) / 1e8,
+          surge: {
+            gainPct: Math.round(((a2c - a2o) / a2o) * 10000) / 100,
+            volRatio: 0,
+            retrace: Math.round(retrace * 100) / 100,
+          },
+          open: a2o, close: a2c, high: h[i], low: l[i],
+          prevOpen: yo2, prevClose: yc2, prevHigh: h[y], prevLow: l[y],
+          at: series.t[i] + series.ms,
+          variant: 'short',
+          variantLabel: '双阴包阳（包住 ' + Math.round(retrace) + '%）',
+        });
+      }
+    }
+  }
+
+  return out;
 }
 
 /** 参数归一化 */
 export function crossPbOptions(input = {}, cfg = {}) {
   const num = (v, d, min, max) => (v == null || v === '' || !Number.isFinite(Number(v))
     ? d : Math.max(min, Math.min(max, Number(v))));
-  const depth = num(input.depth ?? cfg.crossPbDepth, 0, 0, 2);   // 默认 0 = 包覆当根
   const lv = String(input.level ?? 'all');
-  const requireVol = input.surge !== '0' && input.surge !== 'off';
   return {
-    depth: Math.round(depth),
     axis: input.axis === 'above' || input.axis === 'below' ? input.axis : 'all',
+    // all / long（只阳内阴）/ short（只阴内阳）
+    side: input.side === 'long' || input.side === 'short' ? input.side : 'all',
+    pattern: input.pattern === 'dbl' ? 'dbl' : input.pattern === 'inner' ? 'inner' : 'all',
     level: CROSS_PB_LEVELS.includes(lv) ? lv : 'all',
-    volMult: requireVol ? num(input.vol, cfg.crossPbVolMult ?? 1.5, 1, 10) : 0,
-    lookbackBars: Math.round(num(input.look, cfg.crossPbLookback ?? 60, 10, 120)),
     topN: Math.round(num(input.topN, cfg.crossPbTopN ?? 500, 1, 800)),
   };
 }
 
-/** 排序：包覆越新鲜越靠前 */
+
+/** 排序：先按收盘时间倒序（刚收的在前），同一根再按回吐/回补从小到大 */
 export function compareCrossPb(x, y) {
-  const bx = Number.isFinite(x.barsSinceCross) ? x.barsSinceCross : 1e9;
-  const by = Number.isFinite(y.barsSinceCross) ? y.barsSinceCross : 1e9;
-  if (bx !== by) return bx - by;
-  const a = Number.isFinite(y.at) ? y.at : 0;
-  const b = Number.isFinite(x.at) ? x.at : 0;
-  return a - b;
+  const ax = Number.isFinite(x.at) ? x.at : 0;
+  const ay = Number.isFinite(y.at) ? y.at : 0;
+  if (ax !== ay) return ay - ax;
+  const rx = Number.isFinite(x.retrace) ? x.retrace : 1e9;
+  const ry = Number.isFinite(y.retrace) ? y.retrace : 1e9;
+  if (rx !== ry) return rx - ry;
+  return (y.quoteVolume || 0) - (x.quoteVolume || 0);
 }

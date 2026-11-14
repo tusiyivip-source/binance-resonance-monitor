@@ -352,12 +352,14 @@ export function formatAlerts(alerts, { test = false, keyword = '' } = {}) {
   //   其它     = 多级别共振
   const nZero = alerts.filter(a => a.kind === 'zeropair').length;
   const nPair = alerts.filter(a => a.kind === 'pairzero').length;
+  const nCross = alerts.filter(a => a.kind === 'crosspb').length;
   const nSingle = alerts.filter(a => a.kind === 'singlek').length;
   const nDual = alerts.filter(a => a.kind === 'dual').length;
-  const nReso = alerts.length - nZero - nPair - nSingle - nDual;
+  const nReso = alerts.length - nZero - nPair - nSingle - nDual - nCross;
   const nTop = alerts.filter(a => a.tier === 'top').length;
   const nTail = alerts.filter(a => a.tier === 'tail').length;
   const only = nPair === alerts.length ? 'pair'
+    : nCross === alerts.length ? 'cross'   // 阳内阴 / 阴内阳
     : nSingle === alerts.length ? 'single'
     : nZero === alerts.length ? 'zero'
     : nDual === alerts.length ? 'dual' : 'mixed';
@@ -365,6 +367,7 @@ export function formatAlerts(alerts, { test = false, keyword = '' } = {}) {
   let head;
   if (test) head = '🧪 钉钉推送测试';
   else if (only === 'pair') head = `🔔 配对信号 ×${nPair}`;
+  else if (only === 'cross') head = `🔔 阳内阴 / 阴内阳 ×${nCross}`;
   else if (only === 'single') head = `🔔 一阳穿三阴 ×${nSingle}`;
   else if (only === 'zero') head = `🔔 零轴配对信号 ×${nZero}`;
   else if (only === 'dual') head = `🔔 形态提醒 ×${nDual}` + (nTop || nTail ? `（前段 ${nTop} · 后段 ${nTail}）` : '');
@@ -409,6 +412,29 @@ export function formatAlerts(alerts, { test = false, keyword = '' } = {}) {
     });
   }
 
+  // —— ⓪ 阳内阴 / 阴内阳 ——
+  //  做多：阳线之后一根被它完全包含、且没跌破它最低价的阴线
+  //  做空：阴线之后一根被它完全包含、且没涨破它最高价的阳线
+  if (nCross) {
+    const cx = alerts.filter(a => a.kind === 'crosspb')
+      .sort((x, y) => (x.retrace ?? 0) - (y.retrace ?? 0)
+        || String(x.symbol).localeCompare(String(y.symbol)));
+    if (only !== 'cross') { lines.push(`#### 📉 阳内阴 / 阴内阳　×${nCross}`); lines.push(''); }
+    cx.forEach((a, i) => {
+      const up = a.side === 'long';
+      const tag = a.variantLabel || (up ? '阳内阴' : '阴内阳');
+      lines.push(`**${i + 1}. ${a.symbol}**　${a.levelLabel || a.level}　${up ? '看多' : '看空'}　【${tag}】　榜内 #${a.rank ?? '—'}`);
+      if (up) {
+        lines.push(`> 阳线 ${a.prevOpen} → ${a.prevClose}（最高 ${a.prevHigh} / 最低 ${a.prevLow}）`);
+        lines.push(`> 阴线 ${a.open} → ${a.close}　回吐 ${a.retrace ?? '—'}%　（收盘没跌破阳线最低价）`);
+      } else {
+        lines.push(`> 阴线 ${a.prevOpen} → ${a.prevClose}（最高 ${a.prevHigh} / 最低 ${a.prevLow}）`);
+        lines.push(`> 阳线 ${a.open} → ${a.close}　收回 ${a.retrace ?? '—'}%　（收盘没涨破阴线最高价）`);
+      }
+      lines.push(`> 零轴${a.axisSide === 'above' ? '上' : '下'}（DIF ${Number(a.dif ?? 0).toPrecision(3)}）　|　现价 ${a.price}　|　24h ${Number(a.changePct) >= 0 ? '+' : ''}${Number(a.changePct).toFixed(2)}%　|　${hhmm(a.ts)}`);
+      lines.push('');
+    });
+  }
   // —— ⓪ 一阳穿三阴 ——
   // 每条的看点是「推动有多强 + 回调有多浅 + 不破线在哪」，三样都要写清楚。
   if (nSingle) {

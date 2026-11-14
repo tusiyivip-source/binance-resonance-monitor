@@ -189,8 +189,13 @@ export const DEFAULT_SIGNAL = {
   // 「零轴上死叉 → 阳K站上 MA5」：死叉后至少几根
 deadMa5MinBars: 5,
 deadMa5TopN: 500,
-  pairZeroAlertEnabled: true,  // 钉钉只推「配对全景」的信号
-  pairZeroAlertStaleSec: 120, // 次级别K线收盘超过这么多秒就不再报（防重启翻存量）
+  pairZeroAlertEnabled: false, // 配对全景停推 —— 钉钉只留阳内阴/阴内阳
+  pairZeroAlertStaleSec: 120,
+  // 钉钉只推「阳内阴 / 阴内阳」这两套镜像，且只推这三个级别
+  crossPbAlertEnabled: true,
+  crossPbAlertLevels: ['30m', '1h', '2h'],
+  crossPbAlertPattern: 'inner',   // inner=只推单K包覆（阳内阴/阴内阳）；all=连双K结构也推
+  crossPbAlertStaleSec: 120, // 次级别K线收盘超过这么多秒就不再报（防重启翻存量）
   pairZeroMinQuoteVolume: 0,  // 成交额门槛（0=不限）
   // 零轴配对信号是否推送钉钉（true=推送）
   zeroAlertEnabled: false,   // 零轴配对推送停用

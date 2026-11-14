@@ -82,11 +82,62 @@ export class Market {
       if (this.tickerTimer.unref) this.tickerTimer.unref();
       this.log.info(`榜单刷新已启动：每 ${Math.round(Math.max(15_000, APP.tickerRefreshMs || 60_000) / 1000)} 秒一次`);
     }
+    if (!this.repairTimer) {
+      this.repairTimer = setInterval(() => {
+        this.repairGaps().catch(e => this.log.warn('缺口自愈异常：' + (e && e.message)));
+      }, 60_000);
+      if (this.repairTimer.unref) this.repairTimer.unref();
+    }
     if (!this.exchangeTimer) {
       this.exchangeTimer = setInterval(() => {
         this.refreshExchangeInfo().catch(() => {});
       }, Math.max(60_000, APP.exchangeInfoRefreshMs || 30 * 60_000));
       if (this.exchangeTimer.unref) this.exchangeTimer.unref();
+    }
+  }
+
+  /**
+   * 缺口自愈。
+   *
+   * 笔记本休眠再唤醒时 WebSocket 常常**不触发 close**，于是不会走重连补数，
+   * K线系列里就留下一段空洞（实测见过 15分 缺 7 小时 45 分）。空洞会让均线/MACD
+   * 全部算歪，图上也会出现一段空白。
+   *
+   * 这里每分钟扫一遍：某级别最后一根K线比「两个周期」还旧，就重新播种该币种。
+   * 每轮最多修 4 个，避免一次性打爆权重。
+   */
+  async repairGaps() {
+    if (this.repairBusy) return;
+    this.repairBusy = true;
+    try {
+      const now = Date.now();
+      const cands = [];
+      const SCAN = 200;                      // 每根序列回看多少根
+      for (const st of this.symbols.values()) {
+        if (!st?.seeded || !st.series) continue;
+        let bad = false;
+        for (const s of Object.values(st.series)) {
+          if (!s || !s.t.length || !s.ms) continue;
+          // ① 尾部太旧（休眠期间完全没数据）
+          if (now - (s.t[s.t.length - 1] + s.ms) > s.ms * 2) { bad = true; break; }
+          // ② 中间有洞（醒来后新数据接上了，但中间那段是空的）
+          const from = Math.max(1, s.t.length - SCAN);
+          for (let i = s.t.length - 1; i >= from; i--) {
+            if (s.t[i] - s.t[i - 1] > s.ms * 20) { bad = true; break; }
+          }
+          if (bad) break;
+        }
+        if (bad) cands.push(st);
+      }
+      let fixed = 0;
+      for (const st of cands) {
+        if (fixed >= 6) break;
+        try { await this.seedSymbol(st); fixed++; } catch { /* 单币失败忽略 */ }
+      }
+      if (cands.length) this.log.info(`[缺口扫描] 币种 ${this.symbols.size} 个，含缺口 ${cands.length} 个，本轮补 ${fixed} 个`);
+      if (fixed) this.log.info(`缺口自愈：本轮补了 ${fixed} 个币（待补 ${cands.length} 个）`);
+    } finally {
+      this.repairBusy = false;
     }
   }
 

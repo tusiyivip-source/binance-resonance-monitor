@@ -40,7 +40,7 @@ try {
   })()`);
   console.log('  级别下拉: ' + sel.opts.join(' | '));
   ok('★ 标头有「级别筛选」下拉', sel.exists, sel.opts.length + ' 项');
-  ok('★ 8 个级别选项齐全', sel.opts.length === 8, sel.opts.join(','));
+  ok('★ 8 个级别选项齐全（含 4 小时）', sel.opts.length === 9, sel.opts.join(','));
 
   const before = await ev(`(() => {
     const cards=[...document.querySelectorAll('#cggrid .pgcard')];

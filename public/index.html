@@ -57,37 +57,11 @@
 <main>
   <div class="viewtabs">
     <button id="tab-zero" class="vt on">◎ 配对监控</button>
-    <button id="tab-single" class="vt">🚀 一阳穿三阴</button>
     <span class="vtsep"></span>
-    <span id="single-bar" style="display:none">
-      <select id="single-mode" class="vtsel" title="单K策略的展示方式">
-        <option value="chart" selected>K线图</option>
-        <option value="table">表格</option>
-      </select>
-      <select id="single-zero" class="vtsel" title="只看「那根单K发生时」MACD DIF 在零轴哪一侧的形态">
-        <option value="all" selected>零轴不限</option>
-        <option value="above">只看零轴上的</option>
-        <option value="below">只看零轴下的</option>
-      </select>
-      <select id="single-size" class="vtsel" title="每行显示几张图（图表高度会随之变化）">
-        <option value="1">1 列（最大）</option>
-        <option value="2" selected>2 列</option>
-        <option value="3">3 列</option>
-        <option value="4">4 列</option>
-      </select>
-      <select id="single-limit" class="vtsel" title="最多展示多少张图">
-        <option value="12">展示 12 个</option>
-        <option value="24" selected>展示 24 个</option>
-        <option value="40">展示 40 个</option>
-        <option value="60">展示 60 个</option>
-      </select>
-      <button id="single-refresh" class="vt mini" title="立即刷新">↻</button>
-      <span id="single-live" class="chartlive"></span>
-    </span>
+    
     <button id="tab-pgrid" class="vt">▦ 配对全景</button>
     <button id="tab-rev" class="vt">🔔 报警级别K线</button>
-    <button id="tab-half" class="vt">🎯 背驰50%</button>
-    <button id="tab-cg" class="vt">🔁 阳包阴回踩</button>
+    <button id="tab-cg" class="vt">📉 阳内阴回踩</button>
     <span class="vtsep"></span>
     <span id="zero-symbar" style="display:none">
       <select id="pair-mode" class="vtsel" title="配对信号的展示方式">
@@ -130,6 +104,13 @@
       <span id="pg-live" class="chartlive"></span>
     </span>
     <span id="cg-symbar" style="display:none">
+      <div id="cg-dir" class="nnseg">
+        <button class="nnbtn on" data-dir="all">全部</button>
+        <button class="nnbtn" data-dir="yangyin">阳内阴·多</button>
+        <button class="nnbtn" data-dir="yinyang">阴内阳·空</button>
+        <button class="nnbtn" data-dir="dbl-long">双阳包阴·多</button>
+        <button class="nnbtn" data-dir="dbl-short">双阴包阳·空</button>
+      </div>
       <div id="cg-axis" class="nnseg">
         <button class="nnbtn on" data-axis="all">零轴不限</button>
         <button class="nnbtn" data-axis="above">零轴上</button>
@@ -142,43 +123,19 @@
         <option value="1h">1小时</option>
         <option value="2h">2小时</option>
         <option value="3h">3小时</option>
+        <option value="4h">4小时</option>
         <option value="6h">6小时</option>
         <option value="12h">12小时</option>
       </select>
-      <div id="cg-depth" class="nnseg">
-        <button class="nnbtn on" data-depth="0">包覆当根</button>
-        <button class="nnbtn" data-depth="1">回踩 1 根</button>
-        <button class="nnbtn" data-depth="2">回踩 2 根</button>
-      </div>
       <select id="cg-limit" class="vtsel" title="显示多少个面板">
         <option value="40">40 个</option>
         <option value="80">80 个</option>
         <option value="200" selected>全部</option>
       </select>
-      <button id="cg-reset" class="vt mini" title="恢复被 ✕ 关掉的面板">↺</button>
       <button id="cg-refresh" class="vt mini" title="立即刷新">↻</button>
       <span id="cg-live" class="chartlive"></span>
     </span>
-    <span id="half-symbar" style="display:none">
-      <div id="half-axis" class="nnseg">
-        <button class="nnbtn on" data-axis="all">零轴不限</button>
-        <button class="nnbtn" data-axis="above">零轴上(多)</button>
-        <button class="nnbtn" data-axis="below">零轴下(空)</button>
-      </div>
-      <div id="half-mode" class="nnseg">
-        <button class="nnbtn on" data-mode="all">两种都要</button>
-        <button class="nnbtn" data-mode="1">只要背驰50%</button>
-        <button class="nnbtn" data-mode="2">只要反弹50%</button>
-      </div>
-      <select id="half-limit" class="vtsel" title="显示多少个面板">
-        <option value="40">40 个</option>
-        <option value="80">80 个</option>
-        <option value="200" selected>全部</option>
-      </select>
-      <button id="half-reset" class="vt mini" title="恢复被 ✕ 关掉的面板">↺</button>
-      <button id="half-refresh" class="vt mini" title="立即刷新">↻</button>
-      <span id="half-live" class="chartlive"></span>
-    </span>
+    
     <span id="rev-symbar" style="display:none">
       <div id="rev-side" class="nnseg">
         <button class="nnbtn on" data-side="all">全部</button>
@@ -258,16 +215,10 @@
     <div id="view-cg">
       <div id="cggrid"></div>
       <div id="cg-empty" class="empty" style="display:none">
-        暂无符合条件的信号。需要：该级别出现金叉（或死叉）→ 走出反向K线 → 回踩第 N 根阴线（做空为反弹第 N 根阳线）。
+        暂无符合条件的信号。需要：一根阳线 → 紧接一根被它完全包含、且没跌破它最低价的阴线 → 当前这根阳线收盘收复阴线收盘（确认）。
       </div>
     </div>
-    <!-- 背驰50%：多级别 + 缠论笔 + 50% 分位 -->
-    <div id="view-half">
-      <div id="halfgrid"></div>
-      <div id="half-empty" class="empty" style="display:none">
-        暂无符合条件的信号。需要：次级别最后一笔 ≥5 根K线 + 回调 ≥5 根 + 最近两根K线内越过该笔的 50%（高点到低点的一半）。
-      </div>
-    </div>
+        
     <!-- 报警级别K线：配对共振 + 次级别反转条件（回踩≥5根、连续两根阳K、止跌） -->
     <div id="view-rev">
       <div id="revgrid"></div>
@@ -277,37 +228,7 @@
       </div>
     </div>
     <!-- 单K推动 + 回调不破（独立策略，只扫涨幅榜前 50）——默认平铺 K 线 -->
-    <div id="view-single">
-      <div id="singlechartwrap">
-        <div id="singlechartgrid"></div>
-        <div id="single-empty" class="empty" style="display:none">
-          涨幅榜前 50 里暂无「单K推动 + 回调不破」的形态。可放宽单K涨幅下限或实体倍数。
-        </div>
-      </div>
-      <div id="singletablewrap" style="display:none">
-        <table id="singlegrid">
-          <thead>
-            <tr>
-              <th class="c-rank">#</th>
-              <th class="c-sym">币种</th>
-              <th class="c-lv">周期</th>
-              <th class="c-dir">方向</th>
-              <th class="c-zero" title="那根单K发生时的 MACD DIF 在零轴的哪一侧">零轴</th>
-              <th class="c-num" title="大阳线的实体涨幅">单K涨幅</th>
-              <th class="c-num" title="实体相对近20根平均实体的倍数">实体放大</th>
-              <th class="c-num" title="回调期间最低收盘相对大阳线收盘的回落幅度">回踩</th>
-              <th class="c-num" title="大阳线之后已回调多少根">回调根数</th>
-              <th class="c-num" title="回调期间所有收盘都没跌破这个价格（大阳线最低价）">不破线</th>
-              <th class="c-num">现价</th>
-              <th class="c-num">24h%</th>
-              <th class="c-num">成交额</th>
-              <th class="c-time">大K时间</th>
-            </tr>
-          </thead>
-          <tbody id="singlebody"></tbody>
-        </table>
-      </div>
-    </div>
+    
   </div>
 
   <aside id="alerts">
@@ -528,7 +449,6 @@
 <script src="/pair.js"></script>
 <script src="/pgrid.js"></script>
 <script src="/revgrid.js"></script>
-<script src="/halfgrid.js"></script>
 <script src="/crossgrid.js"></script>
 </body>
 </html>

@@ -125,6 +125,7 @@ export class Engine extends Emitter {
     try { this.zeroAlertSweep(); } catch (e) { this.log?.warn?.('零轴配对报警异常：' + (e && e.message)); }
     try { this.pairZeroAlertSweep(); } catch (e) { this.log?.warn?.('配对报警异常：' + (e && e.message)); }
     try { this.singleKAlertSweep(); } catch (e) { this.log?.warn?.('单K报警异常：' + (e && e.message)); }
+    try { this.crossPbAlertSweep(); } catch (e) { this.log?.warn?.('阳内阴报警异常：' + (e && e.message)); }
     this.prune();
   }
 
@@ -426,6 +427,76 @@ export class Engine extends Emitter {
    * 两套各自按 (币种|级别|变体) 做状态跃迁，互不干扰；
    * 报警进历史（配对全景要用），但不推钉钉（noPush）。
    */
+  /**
+   * 「阳内阴 / 阴内阳」的报警扫描 —— 钉钉只推这一套。
+   *
+   * 只扫 crossPbAlertLevels 里的级别（默认 30分 / 1小时 / 2小时），两个方向都推：
+   *   阳内阴（做多）：阳线之后一根被它完全包含、且没跌破它最低价的阴线
+   *   阴内阳（做空）：镜像
+   *
+   * 每根K线只报一次：key = 币种|级别|方向|该K线收盘时间
+   */
+  crossPbAlertSweep() {
+    if (this.cfg.crossPbAlertEnabled !== true) return;
+    const levels = Array.isArray(this.cfg.crossPbAlertLevels) ? this.cfg.crossPbAlertLevels : ['30m', '1h', '2h'];
+    // 钉钉只推「单K包覆」这两种（阳内阴 / 阴内阳）；双K结构只在页面看
+    const opt = crossPbOptions({ pattern: this.cfg.crossPbAlertPattern || 'inner' }, this.cfg);
+    const maxStale = (this.cfg.crossPbAlertStaleSec ?? 120) * 1000;
+    const now = Date.now();
+    if (!this.crossPbSeen) this.crossPbSeen = new Map();
+    for (const st of this.market.symbols.values()) {
+      if (!st?.seeded) continue;
+      if (!(st.rank > 0 && st.rank <= opt.topN)) continue;
+      for (const k of levels) {
+        const s = st.series?.[k];
+        if (!s || s.t.length < 20) continue;
+        let ci = Math.min(s.lastClosedIndex ?? s.t.length - 1, s.t.length - 1);
+        while (ci >= 0 && s.t[ci] + s.ms > now) ci--;
+        if (ci < 2) continue;
+        const closedAt = s.t[ci] + s.ms;
+        if (now - closedAt > maxStale) continue;
+        let ind = null;
+        try { ind = s.ensure(); } catch { ind = null; }
+        let hits = [];
+        try { hits = crossPullbackAt(s, ind, ci, opt) || []; } catch { hits = []; }
+        for (const h of hits) {
+          const key = st.symbol + '|' + k + '|' + h.dir + '|' + closedAt;
+          if (this.crossPbSeen.has(key)) continue;
+          this.crossPbSeen.set(key, now);
+          const label = (LEVELS.find(l => l.key === k) || {}).label || k;
+          const a = {
+            kind: 'crosspb', id: ++this.alertSeq, symbol: st.symbol,
+            mode: 'closed', noPush: false,
+            level: k, levelLabel: label,
+            sub: k, main: k, pair: label, subLabel: label, mainLabel: '',
+            side: h.dir, dir: h.dir, confirmed: true, score: 0,
+            rank: st.rank ?? 0,
+            price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+            changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+            quoteVolume: Math.round(st.quoteVolume ?? 0),
+            variant: h.variant, variantLabel: h.variantLabel,
+            axisSide: h.axisSide, dif: h.crossDif, dea: h.crossDea,
+            open: h.open, close: h.close, high: h.high, low: h.low,
+            prevOpen: h.prevOpen, prevClose: h.prevClose, prevHigh: h.prevHigh, prevLow: h.prevLow,
+            retrace: h.surge?.retrace, bodyPct: h.surge?.gainPct,
+            ts: closedAt, candleT: s.t[ci],
+            text: h.variant === 'long'
+              ? label + ' 阳内阴：阴线收 ' + h.close + '，被阳线 ' + h.prevOpen + '→' + h.prevClose + ' 包住，回吐 ' + h.surge?.retrace + '%'
+              : label + ' 阴内阳：阳线收 ' + h.close + '，被阴线 ' + h.prevOpen + '→' + h.prevClose + ' 包住，收回 ' + h.surge?.retrace + '%',
+          };
+          this.alerts.push(a);
+          this.signalCount++;
+          this.emit('alert', a);
+          this.log.signal('🔔 ' + a.symbol + ' ' + a.text);
+        }
+      }
+    }
+    if (this.crossPbSeen.size > 4000) {
+      const keys = [...this.crossPbSeen.keys()].slice(0, this.crossPbSeen.size - 4000);
+      for (const kk of keys) this.crossPbSeen.delete(kk);
+    }
+  }
+
   pairZeroAlertSweep() {
     const opt = deadMa5Options({}, this.cfg);
     const maxStale = (this.cfg.pairZeroAlertStaleSec ?? 120) * 1000;
@@ -962,30 +1033,34 @@ export class Engine extends Emitter {
         let ind = null;
         try { ind = s.ensure(); } catch { ind = null; }
         if (!ind) continue;
-        let hit = null;
-        try { hit = crossPullbackAt(s, ind, ci, opt); } catch { hit = null; }
-        if (!hit) continue;
+        let hits = [];
+        try { hits = crossPullbackAt(s, ind, ci, opt) || []; } catch { hits = []; }
+        if (!Array.isArray(hits) || !hits.length) continue;
         const label = (LEVELS.find(l => l.key === k) || {}).label || k;
         const lvl = this.levelPayload(st, k, bars);
         if (!lvl) continue;
-        items.push({
-          ...lvl, symbol: sym, kind: 'crosspb', side: hit.dir, at: hit.at,
-          pair: {
-            sub: k, main: k, pair: label, subLabel: label, mainLabel: '',
-            levelLabel: label, dir: hit.dir, rank: st.rank,
-            crossDif: hit.crossDif, crossDea: hit.crossDea, crossT: hit.crossT,
-            axisSide: hit.axisSide, depth: hit.depth,
-            barsSinceCross: hit.barsSinceCross, pullFirst: hit.pullFirst, surge: hit.surge,
-            open: hit.open, close: hit.close, pivot: hit.pivot,
-            variant: hit.variant, variantLabel: hit.variantLabel, depthLabel: hit.depthLabel,
-            price: Math.round((st.price ?? 0) * 1e8) / 1e8,
-            changePct: Math.round((st.changePct ?? 0) * 100) / 100,
-            quoteVolume: Math.round(st.quoteVolume ?? 0),
-          },
-        });
+        for (const hit of hits) {
+          items.push({
+            ...lvl, symbol: sym, kind: 'crosspb', side: hit.dir, at: hit.at,
+            pair: {
+              sub: k, main: k, pair: label, subLabel: label, mainLabel: '',
+              levelLabel: label, dir: hit.dir, rank: st.rank,
+              crossDif: hit.crossDif, crossDea: hit.crossDea, crossT: hit.crossT,
+              axisSide: hit.axisSide, depth: hit.depth,
+              barsSinceCross: hit.barsSinceCross, pullFirst: hit.pullFirst, surge: hit.surge,
+              open: hit.open, close: hit.close, pivot: hit.pivot,
+              variant: hit.variant, variantLabel: hit.variantLabel, depthLabel: hit.depthLabel,
+              price: Math.round((st.price ?? 0) * 1e8) / 1e8,
+              changePct: Math.round((st.changePct ?? 0) * 100) / 100,
+              quoteVolume: Math.round(st.quoteVolume ?? 0),
+            },
+          });
+        }
       }
     }
-    items.sort((x, y) => compareCrossPb({ at: x.at, barsSinceCross: x.pair.barsSinceCross }, { at: y.at, barsSinceCross: y.pair.barsSinceCross }));
+    items.sort((x, y) => compareCrossPb(
+      { at: x.at, retrace: x.pair.surge?.retrace, quoteVolume: x.pair.quoteVolume },
+      { at: y.at, retrace: y.pair.surge?.retrace, quoteVolume: y.pair.quoteVolume }));
     const cap = Math.max(1, Math.min(400, Number(limit) || 200));
     return {
       generatedAt: now, total: items.length,

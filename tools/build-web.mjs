@@ -28,7 +28,7 @@ const CORE = [
   'watch.js', 'zero-monitor.js', 'single-k.js', 'nn.js', 'pair-zero.js', 'pair-rebound.js', 'chan-half.js', 'dead-ma5.js', 'cross-pullback.js',
 ];
 const BROWSER = ['boot.js'];
-const PUBLIC_FILES = ['app.js', 'chart.js', 'pair.js', 'pgrid.js', 'revgrid.js', 'halfgrid.js', 'crossgrid.js', 'style.css'];
+const PUBLIC_FILES = ['app.js', 'chart.js', 'pair.js', 'pgrid.js', 'revgrid.js', 'crossgrid.js', 'style.css'];
 
 /** 构建产物「拥有」的路径——只清理这些，不动 about.html 与 img/ */
 const OWNED = ['index.html', ...PUBLIC_FILES, 'vendor', 'src'];
